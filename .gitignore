@@ -7,3 +7,6 @@ runs/*
 !runs/.gitkeep
 debug_frames/
 .DS_Store
+
+# depth model weights (37MB) — fetched by skopos/perception/depth.py on first use
+skopos/models/*.onnx_data

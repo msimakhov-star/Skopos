@@ -121,10 +121,38 @@ def check_vlm_offline() -> None:
     print(f"  vlm offline        OK  constructs without network, model {MODEL!r}")
 
 
+def check_spatial_map() -> None:
+    """Depth -> points -> occupancy on a real kitchen fixture. Fails if the
+    geometry is nonsense: every cell classified, points inside the stated
+    extents, floor at z≈0, and the camera's own cell free (you are standing
+    there)."""
+    import pathlib
+    import numpy as np
+    from PIL import Image
+    from .perception.depth import build_map, GRID_M, CELL_M
+    fx = pathlib.Path(__file__).parent.parent / "static" / "fixtures" / "IMG_6978.jpg"
+    img = np.asarray(Image.open(fx).convert("RGB"))
+    m = build_map(img)
+    n = int(GRID_M / CELL_M)
+    assert m.occupancy.shape == (n, n)
+    assert set(np.unique(m.occupancy)).issubset({0, 1, 2}), "unclassified cell"
+    assert (m.occupancy == 1).sum() > 20, "no obstacles found in a kitchen photo"
+    assert (m.occupancy == 0).sum() > 100, "no free floor found"
+    p = m.points
+    assert len(p) > 10_000
+    assert (np.abs(p[:, 0]) <= GRID_M / 2 + 1e-6).all() and (p[:, 1] > 0).all() and (p[:, 1] <= GRID_M).all()
+    assert p[:, 2].min() >= -0.3 - 1e-6 and p[:, 2].max() <= 2.6 + 1e-6
+    d = m.to_dict()
+    assert len(d["points"]) <= 8000 and len(d["occupancy"]) == n
+    print(f"  spatial map        OK  {m.n_points:,} pts, {(m.occupancy==1).sum()} occ / "
+          f"{(m.occupancy==0).sum()} free cells, depth {m.depth_ms:.0f} ms")
+
+
 def main() -> int:
     print("skopos selfcheck")
     for fn in (check_privacy, check_importance_weights, check_bandit_flip,
-               check_end_to_end, check_naming_honesty, check_vlm_offline):
+               check_end_to_end, check_naming_honesty,
+               check_spatial_map, check_vlm_offline):
         fn()
     print("all checks passed")
     return 0

@@ -34,6 +34,7 @@ app = FastAPI(title="Skopos")
 # Set by POST /api/scan. New Sessions start from it instead of the mock room;
 # the "reset_scene" WebSocket message clears it.
 LATEST_SCAN: SceneGraph | None = None
+LATEST_MAP: dict | None = None
 MAX_SCAN_BYTES = 12 * 1024 * 1024
 
 
@@ -165,7 +166,7 @@ async def config() -> JSONResponse:
 
 @app.websocket("/ws")
 async def ws(sock: WebSocket) -> None:
-    global LATEST_SCAN
+    global LATEST_SCAN, LATEST_MAP
     await sock.accept()
     session = Session(int(os.environ.get("SKOPOS_SEED", "1337")),
                       os.environ.get("SKOPOS_PROVIDER", "mock"))
@@ -237,7 +238,7 @@ def _multipart_file(content_type: str, body: bytes) -> bytes | None:
 
 @app.post("/api/scan")
 async def scan(request: Request) -> JSONResponse:
-    global LATEST_SCAN
+    global LATEST_SCAN, LATEST_MAP
     chunks, size = [], 0
     async for chunk in request.stream():
         size += len(chunk)
@@ -256,6 +257,22 @@ async def scan(request: Request) -> JSONResponse:
     perception = _perception()
     # VLM does a blocking HTTP call; keep it off the event loop that pumps /ws.
     result = await asyncio.to_thread(perception.analyse, [frame], room_id=f"scan-{stamp}")
+    # Spatial map from the SAME frame while we still hold it: depth -> points ->
+    # occupancy, in a worker thread. Same privacy contract — only numbers survive.
+    try:
+        from .perception.depth import build_map
+        import io as _io
+        import numpy as _np
+        from PIL import Image as _Image
+        _img = _np.asarray(_Image.open(_io.BytesIO(frame)).convert("RGB"))
+        smap = await asyncio.to_thread(build_map, _img)
+        del _img
+        LATEST_MAP = smap.to_dict()
+        (RUNS / f"map-{stamp}.json").write_text(json.dumps(LATEST_MAP))
+        log.info("spatial map: %d points, depth %.0f ms", smap.n_points, smap.depth_ms)
+    except Exception as exc:  # additive: a scan without a map is still a scan
+        log.warning("spatial map failed: %s", exc)
+        LATEST_MAP = None
     del frame  # the only copy; nothing was written to disk
 
     graph = result.graph
@@ -276,6 +293,17 @@ async def scan(request: Request) -> JSONResponse:
         "source": perception.name,
         "cached_as": name,
     })
+
+
+@app.get("/api/scan/map")
+async def scan_map() -> JSONResponse:
+    """Latest spatial map (points + occupancy) or 404. Fetched once per scan, not per frame."""
+    if LATEST_MAP is not None:
+        return JSONResponse(LATEST_MAP)
+    maps = sorted(RUNS.glob("map-*.json"), key=lambda p: p.stat().st_mtime)
+    if not maps:
+        return JSONResponse({"error": "no map yet"}, status_code=404)
+    return JSONResponse(json.loads(maps[-1].read_text()))
 
 
 @app.get("/api/scan/latest")
