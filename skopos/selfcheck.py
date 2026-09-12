@@ -171,7 +171,7 @@ def check_anti_rigging() -> None:
         for _ in range(n):
             frame = s.step()
         assert frame["probe"]["strategy"] != "request_human_assist"
-        return s.metrics.report().placeholder_readiness_smoothed
+        return s.metrics_autonomous.report().placeholder_readiness_smoothed   # the no-human-assist probe this check was written for
 
     mock = MockPerception().analyse([]).graph
     hazard = mock.copy()
