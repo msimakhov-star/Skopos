@@ -121,6 +121,28 @@ built on two hundred.
 
 Bands: **≥ 75 READY · 45–74 MARGINAL · < 45 NOT READY**
 
+## 3D space mapping
+
+A scan produces a spatial map alongside the scene graph, on device, in about half a second:
+
+```
+photo -> Depth Anything V2 Small (ONNX, CPU) -> relative depth
+      -> scaled with ONE stated assumption: camera 1.4 m above the floor
+      -> back-projected point cloud, floor at z = 0
+      -> 6 m x 6 m occupancy grid at 10 cm: free / occupied / unknown
+```
+
+`GET /api/scan/map` serves up to 8,000 points plus the grid. The viewer shows it as an
+orbitable point cloud (**cloud**) or a top-down map (**map**), next to the Reactor stream.
+
+**What it is not.** Monocular depth has no metric scale; the 1.4 m anchor is an assumption
+shown on screen, walls bulge, thin objects vanish. It is a *plausible* map of your room, not
+a measured one. A robot could plan a route on it; it should not trust the centimetres. The
+`note` field says exactly this and the UI prints it.
+
+The 37 MB model weights are Apache-2.0, gitignored, and fetched from Hugging Face on the first
+scan (verified: 5 s on venue wifi).
+
 ## Providers
 
 | Provider | Status | Notes |
