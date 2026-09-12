@@ -79,6 +79,7 @@ class SpatialMap:
     confs: list | None = None
     used: list | None = None
     centred: bool = False
+    pano_fov_deg: float | None = None   # set only by build_pano_map
 
     def to_dict(self, max_points: int = 8000) -> dict:
         pts = self.points
@@ -95,6 +96,7 @@ class SpatialMap:
             "note": self.note,
             "centred": bool(self.centred),
             "yaws": self.yaws,
+            "pano_fov_deg": self.pano_fov_deg,
         }
 
 
@@ -227,4 +229,61 @@ def fuse_sweep(images: list[np.ndarray], hfov_deg: float = HFOV_DEG) -> SpatialM
     m = SpatialMap(pts, _occupancy(pts, centred=True), CELL_M, GRID_M, CAMERA_HEIGHT_M,
                    total_ms, len(pts), note)
     m.yaws = [round(v, 1) for v in yaws]; m.confs = confs; m.used = used; m.centred = True
+    return m
+
+
+# ---------------------------------------------------------------------------
+# One panorama strip (iPhone "Pano" mode) — treated as a cylindrical projection
+# ---------------------------------------------------------------------------
+
+def build_pano_map(img_rgb: np.ndarray, pano_fov_deg: float = 180.0) -> SpatialMap:
+    """One wide panorama -> centred map, camera at the grid centre.
+
+    Geometry (cylindrical, camera level, FOV assumed — iPhone does not record it):
+      column u -> bearing   theta = (u/W - 0.5) * pano_fov
+      row    v -> elevation phi   = (0.5 - v/H) * vfov,  vfov = pano_fov * H/W
+      d = horizontal range along that bearing (the cylinder radius), so
+      x = d sin(theta), y = d cos(theta), z = CAMERA_HEIGHT_M + d tan(phi).
+    Scale anchor is the same idea as build_map — the bottom 15% of rows is
+    floor — adapted to this geometry: a floor pixel at elevation phi < 0 sits at
+    d = CAMERA_HEIGHT_M / tan(-phi); one scalar fits the band's median to that.
+    """
+    import time
+    fov = float(pano_fov_deg)
+    t0 = time.time()
+    inv = predict_depth(img_rgb)
+    ms = (time.time() - t0) * 1000
+    h, w = inv.shape
+    vfov = fov * h / w
+    # Explicit ufunc calls, not `a * b`, wherever a local array is an operand
+    # and is used again afterwards: on Python 3.14 (LOAD_FAST_BORROW) NumPy
+    # 2.2's temporary elision sees a refcount of 1 on a plain local and writes
+    # the product into its buffer, so `X = d * s` silently made X *be* d.
+    us = np.arange(w, dtype=np.float32)[None, :].repeat(h, 0)
+    vs = np.arange(h, dtype=np.float32)[:, None].repeat(w, 1)
+    theta = np.radians((np.divide(us, w) - 0.5) * fov)
+    phi = np.radians((0.5 - np.divide(vs, h)) * vfov)
+
+    rel = np.divide(1.0, np.clip(inv, 1e-3, None))
+    band = vs > h * 0.85                              # floor band; phi < 0 there
+    expected = CAMERA_HEIGHT_M / np.tan(-phi[band])
+    scale = np.median(expected) / max(np.median(rel[band]), 1e-6)
+    d = np.clip(np.multiply(rel, scale), 0.2, 12.0)
+
+    from PIL import Image
+    rgb = np.asarray(Image.fromarray(img_rgb).resize((w, h)), np.uint8)
+    X = np.multiply(d, np.sin(theta))
+    Y = np.multiply(d, np.cos(theta))
+    Z = CAMERA_HEIGHT_M + np.multiply(d, np.tan(phi))
+    assert X is not d and Y is not d, "operand buffer reused"
+    pts = np.stack([X.ravel(), Y.ravel(), Z.ravel(),
+                    rgb[..., 0].ravel(), rgb[..., 1].ravel(), rgb[..., 2].ravel()], 1).astype(np.float32)
+    keep = ((np.abs(pts[:, 0]) < GRID_M / 2) & (np.abs(pts[:, 1]) < GRID_M / 2)
+            & (pts[:, 2] > -0.3) & (pts[:, 2] < 2.6))
+    pts = pts[keep]
+    note = (f"Panorama (cylindrical, assumed {fov:g} deg FOV), monocular depth, "
+            "1.4 m camera height. Plausible, not measured.")
+    m = SpatialMap(pts, _occupancy(pts, centred=True), CELL_M, GRID_M, CAMERA_HEIGHT_M,
+                   ms, len(pts), note)
+    m.centred = True; m.pano_fov_deg = fov
     return m

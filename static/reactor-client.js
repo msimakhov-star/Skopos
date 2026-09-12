@@ -1,9 +1,15 @@
 /* Skopos — Reactor browser client.
  *
  * Opens ONE LingBot World 2 session per page, anchored on a kitchen photo,
- * and keeps it in step with the Skopos loop: every time the server's
- * render.prompt changes (lighting, occlusion, clutter — the promptable axes),
- * the new prompt is hot-swapped at the next chunk boundary.
+ * and keeps it in step with the Skopos loop. The server's render.prompt
+ * (lighting, occlusion, clutter — the promptable axes) changes almost every
+ * 0.55s step, and a hot-swapped prompt takes effect at the next chunk
+ * boundary, so forwarding every change re-steers the world several times a
+ * second and it drifts into mush. Hence the WORLD LOCK:
+ *   - locked (default): prompt changes are held in state.pendingPrompt and
+ *     sent only when the user clicks "apply scene" (applyScene()).
+ *   - live: sent automatically, at most one setPrompt per PROMPT_MIN_GAP_MS
+ *     and only when the text differs from the last one sent.
  *
  * Verified against @reactor-models/lingbot-world-2@1.0.1 on 12 Sep 2026:
  *   new LingbotWorld2Model({})           modelName is preset by the class
@@ -28,13 +34,18 @@
 
 const SDK_URL = "https://cdn.jsdelivr.net/npm/@reactor-models/lingbot-world-2@1.0.1/+esm";
 const DEFAULT_ANCHOR = "/static/fixtures/IMG_6978.jpg";
+const PROMPT_MIN_GAP_MS = 4000;   // live mode: floor between two setPrompt calls
 
 const state = {
   model: null,
   status: "disconnected",
   jwt: null,
   anchorName: null,
-  lastPrompt: null,
+  lastPrompt: null,      // last prompt actually sent to the world
+  lastSentAt: 0,
+  locked: true,          // world lock — see header comment
+  pendingPrompt: null,   // latest prompt held back while locked / throttled
+  pendingCount: 0,       // prompt changes absorbed since the last send
   started: false,
   idleKillSeconds: 90,
   idleTimer: null,
@@ -127,10 +138,12 @@ async function startWith(detail, anchorUrl) {
   await stageAnchor(m, detail, anchorUrl || DEFAULT_ANCHOR);
   if (detail.seed != null) await m.setSeed({ seed: detail.seed });
   await m.setPrompt({ prompt: detail.prompt });
-  state.lastPrompt = detail.prompt;
+  state.lastPrompt = detail.prompt; state.lastSentAt = Date.now();
+  state.pendingPrompt = null; state.pendingCount = 0;
   await m.start();
   state.started = true;
   note("streaming — " + state.anchorName);
+  showWorld();
 }
 
 async function disconnect() {
@@ -199,6 +212,48 @@ function bindKeys() {
   addEventListener("blur", () => idleAll().catch(() => {}));
 }
 
+// ---------------------------------------------------------------- world lock
+/* Indicator span lives next to #note, created here because index.html
+ * overwrites #note.textContent on every frame. Click it to toggle the lock. */
+function worldEl() {
+  let el = $("#rx-world");
+  if (el) return el;
+  const n = $("#note"); if (!n) return null;
+  el = document.createElement("span");
+  el.id = "rx-world";
+  el.style.cssText = "color:var(--faint);cursor:pointer;white-space:nowrap";
+  el.title = "click to toggle. locked: scene changes are held until 'apply scene'. live: sent at most every 4s";
+  el.onclick = () => setLocked(!state.locked);
+  n.insertAdjacentElement("afterend", el);
+  return el;
+}
+function showWorld() {
+  const el = worldEl(); if (!el) return;
+  const n = state.pendingCount;
+  el.textContent = state.locked
+    ? "world: locked" + (n ? ` · ${n} pending change${n === 1 ? "" : "s"}` : "")
+    : "world: live";
+}
+
+/* Send state.pendingPrompt once. force=true skips the live-mode gap (a click). */
+function sendPrompt(force) {
+  const p = state.pendingPrompt;
+  if (!p || !state.model || !state.started) return false;
+  if (p === state.lastPrompt) { state.pendingPrompt = null; state.pendingCount = 0; showWorld(); return false; }
+  if (!force && Date.now() - state.lastSentAt < PROMPT_MIN_GAP_MS) return false;
+  state.lastPrompt = p; state.lastSentAt = Date.now();
+  state.pendingPrompt = null; state.pendingCount = 0;
+  state.model.setPrompt({ prompt: p }).catch(console.error);   // next chunk boundary
+  touch(); showWorld();
+  return true;
+}
+function applyScene() { return sendPrompt(true); }
+function setLocked(v) {
+  state.locked = !!v;
+  if (!state.locked) sendPrompt(false);   // drain what was held, subject to the gap
+  showWorld();
+}
+
 // ---------------------------------------------------------------- Skopos hook
 /* Called from index.html apply(f) on every webrtc frame. Idempotent. */
 async function ensure(render) {
@@ -217,10 +272,13 @@ async function ensure(render) {
     }
     return;
   }
-  if (state.started && render.prompt && render.prompt !== state.lastPrompt) {
-    state.lastPrompt = render.prompt;
-    state.model.setPrompt({ prompt: render.prompt }).catch(console.error);   // next chunk boundary
+  if (state.started && render.prompt) {
+    const changed = render.prompt !== state.lastPrompt;
+    if (!changed) { state.pendingPrompt = null; state.pendingCount = 0; }   // scene is back to what the world shows
+    else if (render.prompt !== state.pendingPrompt) { state.pendingPrompt = render.prompt; state.pendingCount++; }
+    if (changed && !state.locked) sendPrompt(false);   // live: throttled, latest text wins
   }
+  showWorld();
 }
 
 async function setAnchor(url) {
@@ -232,11 +290,14 @@ async function setAnchor(url) {
 
 bindKeys();
 addEventListener("beforeunload", () => { if (state.model) state.model.disconnect(); });
+{ const b = $("#rx-apply"); if (b) b.onclick = () => applyScene(); }
 
 window.SkoposReactor = {
   ensure: (render) => { state.lastDetail = { ...(render.detail || {}), prompt: render.prompt }; return ensure(render); },
-  disconnect, setAnchor, idleAll,
+  disconnect, setAnchor, idleAll, applyScene, setLocked,
   get status() { return state.status; },
   get started() { return state.started; },
   get anchor() { return state.anchorName; },
+  get locked() { return state.locked; },
+  get pendingPrompt() { return state.pendingPrompt; },
 };

@@ -89,6 +89,60 @@ def check_end_to_end() -> None:
           f"ESS {r.effective_sample_size:.0f}")
 
 
+def check_readiness_honest() -> None:
+    """Anti-rigging. (1) The same robot in a harder room must score lower: the
+    window and the smoothing may delay a difference, never flatten it. Both
+    rooms run the SAME fixed strategy (wide_arc, the clean-room winner) so the
+    gap measures the room, not the bandit: with the bandit in the loop the hard
+    room converges to request_human_assist, which nearly always succeeds and
+    the formula does not charge for time, so that gap is 2-15 points and
+    seed-dependent (printed, not asserted). (2) On a fixed room the displayed
+    score never moves more than MAX_STEP per attempt. (3) Hysteresis bands."""
+    from .metrics.readiness import MAX_STEP, next_state
+
+    def run(g: SceneGraph, arm: str | None, n: int = 300) -> tuple[list[float], object]:
+        s, t, b, m = (PerturbationSampler(seed=7), FetchMugTask(seed=7),
+                      LinUCB(SceneGraph.CONTEXT_DIM), Metrics())
+        trace = []
+        for _ in range(n):
+            p = s.sample()
+            v = s.apply(g, p)
+            ctx = v.context_vector()
+            a = arm or b.select(ctx)
+            o = t.attempt(v, a)
+            b.update(a, ctx, o.reward)
+            m.record(o, p.weight)
+            trace.append(m.report().placeholder_readiness_smoothed)
+        return trace, m.report()
+
+    clean = MockPerception().analyse([]).graph
+    clean.lighting, clean.clutter, clean.occlusion = 0.95, 0.03, 0.02
+    clean.objects = [o for o in clean.objects if not o.hazards or o.label == "mug"]
+    hard = MockPerception().analyse([]).graph
+    hard.lighting, hard.clutter, hard.occlusion = 0.18, 0.85, 0.70
+
+    ct, cr = run(clean, "wide_arc")
+    ht, hr = run(hard, "wide_arc")
+    gap = cr.placeholder_readiness_smoothed - hr.placeholder_readiness_smoothed
+    assert gap >= 10.0, f"hazardous room not >= 10 below clean: gap {gap:.1f}"
+    _, cb = run(clean, None)
+    _, hb = run(hard, None)
+    bandit_gap = cb.placeholder_readiness_smoothed - hb.placeholder_readiness_smoothed
+
+    jump = max(abs(a - b) for tr in (ct, ht) for a, b in zip(tr, tr[1:]))
+    assert jump <= MAX_STEP + 1e-9, f"smoothed score jumped {jump:.2f} > {MAX_STEP}"
+
+    lo, hi = cr.placeholder_success_ci
+    assert 0.0 <= lo <= cr.placeholder_success_rate <= hi <= 1.0, f"bad CI {lo, hi}"
+    assert next_state("READY", 72) == "READY" and next_state("MARGINAL", 72) == "MARGINAL"
+    assert next_state("NOT READY", 48) == "NOT READY" and next_state("MARGINAL", 48) == "MARGINAL"
+    assert next_state("READY", 69.9) == "MARGINAL" and next_state("NOT READY", 50.1) == "MARGINAL"
+    print(f"  readiness honest   OK  wide_arc clean {cr.placeholder_readiness_smoothed:.1f} vs hard "
+          f"{hr.placeholder_readiness_smoothed:.1f} (gap {gap:.1f}); bandit gap {bandit_gap:.1f}; "
+          f"max step {jump:.2f}; ESS {cr.effective_sample_size:.0f}, fill {cr.window_fill:.2f}, "
+          f"CI ±{(hi - lo) / 2:.3f}")
+
+
 def check_naming_honesty() -> None:
     """Every outcome-model-derived metric must carry the placeholder_ prefix, and
     the words 'trained' / 'learned policy' must appear nowhere in the package."""
@@ -171,11 +225,47 @@ def check_sweep_fusion() -> None:
           f"{sum(1 for u in m.used if u == 'overlap')}/{len(m.used)} pairs from overlap")
 
 
+def check_panorama() -> None:
+    """One iPhone panorama strip -> centred map. The phone does not record the
+    sweep; build_pano_map defaults to 180 deg, and at 180 the strip's vertical
+    FOV (fov*H/W = 43 deg) puts this fixture's floor band 3.6 m out, mostly
+    beyond the 3 m half-grid: measured 46 free cells, under the 100 this check
+    wants. So the check states its FOV: the pano is shot in portrait, its
+    vertical FOV is the camera's long-side FOV (HFOV_DEG), and the sweep
+    follows from the aspect — about 290 deg here."""
+    import pathlib
+    import numpy as np
+    from PIL import Image
+    from .perception.depth import build_pano_map, HFOV_DEG, GRID_M, CELL_M
+    fx = pathlib.Path(__file__).parent.parent / "static" / "fixtures" / "IMG_6987.jpg"
+    img = np.asarray(Image.open(fx).convert("RGB"))
+    h, w = img.shape[:2]
+    assert w / h > 2.5, "fixture is not a panorama strip"
+    fov = HFOV_DEG * w / h
+    m = build_pano_map(img, fov)
+    n = int(GRID_M / CELL_M)
+    assert m.centred and m.pano_fov_deg == fov
+    assert m.occupancy.shape == (n, n)
+    assert set(np.unique(m.occupancy)).issubset({0, 1, 2}), "unclassified cell"
+    assert (m.occupancy == 1).sum() > 20, "no obstacles found in the panorama"
+    assert (m.occupancy == 0).sum() > 100, "no free floor found in the panorama"
+    p = m.points
+    assert len(p) > 10_000
+    assert (np.abs(p[:, 0]) <= GRID_M / 2 + 1e-6).all() and (np.abs(p[:, 1]) <= GRID_M / 2 + 1e-6).all()
+    assert p[:, 2].min() >= -0.3 - 1e-6 and p[:, 2].max() <= 2.6 + 1e-6
+    assert "Panorama" in m.note and f"{fov:g}" in m.note
+    d = m.to_dict()
+    assert d["pano_fov_deg"] == fov and d["centred"] and len(d["points"]) <= 8000
+    print(f"  panorama           OK  {w}x{h} strip, assumed {fov:.0f} deg, {m.n_points:,} pts, "
+          f"{(m.occupancy==1).sum()} occ / {(m.occupancy==0).sum()} free cells, depth {m.depth_ms:.0f} ms")
+
+
 def main() -> int:
     print("skopos selfcheck")
     for fn in (check_privacy, check_importance_weights, check_bandit_flip,
-               check_end_to_end, check_naming_honesty,
-               check_spatial_map, check_vlm_offline, check_sweep_fusion):
+               check_end_to_end, check_readiness_honest, check_naming_honesty,
+               check_spatial_map, check_vlm_offline, check_sweep_fusion,
+               check_panorama):
         fn()
     print("all checks passed")
     return 0

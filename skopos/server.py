@@ -133,6 +133,8 @@ class Session:
                 "effective_sample_size": report.effective_sample_size,
                 "attempts": report.attempts,
                 "placeholder_readiness": report.placeholder_readiness,
+                "placeholder_readiness_smoothed": report.placeholder_readiness_smoothed,
+                "placeholder_success_ci": list(report.placeholder_success_ci),
                 "state": report.state,
                 "blame": report.blame,
                 "rolling": list(self.metrics.sparkline),
@@ -245,15 +247,71 @@ def _multipart_files(content_type: str, body: bytes) -> list[bytes]:
 
 MAX_SWEEP_BYTES = 40 * 1024 * 1024
 _JPEG, _PNG = b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n"
+PANO_ASPECT = 2.5          # one image wider than this is a panorama, not a sweep
+
+
+def _decode_rgb(frame: bytes):
+    import io
+    import numpy as np
+    from PIL import Image
+    return np.asarray(Image.open(io.BytesIO(frame)).convert("RGB"))
+
+
+def _clamp_fov(fov: float) -> float:
+    return max(90.0, min(360.0, float(fov)))
+
+
+async def _pano_map(img, fov: float) -> dict:
+    """Panorama pixels -> LATEST_MAP + runs/ cache, in a worker thread. Returns
+    the response body. The caller deletes the pixels."""
+    global LATEST_MAP
+    from .perception.depth import build_pano_map
+    smap = await asyncio.to_thread(build_pano_map, img, fov)
+    stamp = int(time.time())
+    LATEST_MAP = smap.to_dict()
+    (RUNS / f"map-{stamp}.json").write_text(json.dumps(LATEST_MAP))
+    log.info("pano: %dx%d, assumed fov %.0f -> %d points, depth %.0f ms",
+             img.shape[1], img.shape[0], fov, smap.n_points, smap.depth_ms)
+    return {"n_points": smap.n_points, "depth_ms": round(smap.depth_ms, 1),
+            "pano_fov_deg": smap.pano_fov_deg, "frames_retained": 0,
+            "cached_as": f"map-{stamp}.json", "note": smap.note}
+
+
+@app.post("/api/scan/pano")
+async def scan_pano(request: Request, fov: float = 180.0) -> JSONResponse:
+    """One wide panorama (iPhone Pano) -> one centred map. ?fov= is the assumed
+    horizontal sweep in degrees — the phone does not record it — clamped 90..360.
+    Same privacy contract as /api/scan: parsed in memory, deleted, numbers only."""
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_SCAN_BYTES:
+            return JSONResponse({"error": "upload larger than 12 MB"}, status_code=413)
+        chunks.append(chunk)
+    frame = _multipart_file(request.headers.get("content-type", ""), b"".join(chunks))
+    del chunks
+    if frame is None:
+        return JSONResponse({"error": "multipart field 'file' missing"}, status_code=400)
+    if not (frame[:3] == _JPEG or frame[:8] == _PNG):
+        del frame
+        return JSONResponse({"error": "only image/jpeg or image/png accepted"}, status_code=415)
+    img = _decode_rgb(frame)
+    del frame
+    try:
+        body = await _pano_map(img, _clamp_fov(fov))
+    finally:
+        del img
+    return JSONResponse(body)
 
 
 @app.post("/api/scan/sweep")
-async def scan_sweep(request: Request) -> JSONResponse:
+async def scan_sweep(request: Request, fov: float = 180.0) -> JSONResponse:
     """Several photos of ONE spot, turning -> one fused 360-ish map.
 
     Same privacy contract as /api/scan: frames are parsed in memory, fused in a
     worker thread, and deleted. Only the numbers survive. Does not touch the
-    scene graph — the sweep is geometry, the graph is semantics."""
+    scene graph — the sweep is geometry, the graph is semantics.
+    A single image wider than PANO_ASPECT is routed to the panorama path."""
     global LATEST_MAP
     chunks, size = [], 0
     async for chunk in request.stream():
@@ -264,15 +322,22 @@ async def scan_sweep(request: Request) -> JSONResponse:
     frames = _multipart_files(request.headers.get("content-type", ""), b"".join(chunks))
     del chunks
     frames = [f for f in frames if f and (f[:3] == _JPEG or f[:8] == _PNG)]
-    if len(frames) < 2:
+    if not frames:
         return JSONResponse({"error": "need at least two JPEG/PNG 'file' parts"}, status_code=400)
-    import io as _io
-    import numpy as _np
-    from PIL import Image as _Image
     from .perception.depth import fuse_sweep
-    imgs = [_np.asarray(_Image.open(_io.BytesIO(f)).convert("RGB")) for f in frames]
+    imgs = [_decode_rgb(f) for f in frames]
     n_bytes = sum(len(f) for f in frames)
     del frames
+    if len(imgs) == 1 and imgs[0].shape[1] / imgs[0].shape[0] > PANO_ASPECT:
+        try:
+            body = await _pano_map(imgs[0], _clamp_fov(fov))
+        finally:
+            del imgs
+        body["routed_to"] = "pano"
+        return JSONResponse(body)
+    if len(imgs) < 2:
+        del imgs
+        return JSONResponse({"error": "need at least two JPEG/PNG 'file' parts"}, status_code=400)
     try:
         smap = await asyncio.to_thread(fuse_sweep, imgs)
     finally:
