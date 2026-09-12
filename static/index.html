@@ -90,6 +90,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
         <div class="badge">provider <b id="prov">mock</b></div>
         <div class="badge">seed <b id="seed">—</b></div>
         <div class="badge">ess <b id="ess">0</b></div>
+        <div class="badge">reactor <b id="rx-status">—</b> · idle <b id="rx-idle">—</b></div>
       </div>
     </div>
     <div id="perturb"></div>
@@ -99,6 +100,8 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     <span style="color:var(--faint)">reward <b id="arew" style="color:var(--ink)">—</b></span>
     <span style="color:var(--faint)">cause <b id="acause" style="color:var(--ink)">—</b></span>
     <span style="color:var(--faint);margin-left:auto" id="note"></span>
+    <select id="anchor" style="background:var(--sunk);color:var(--ink);border:1px solid var(--line);font:11px var(--mono);padding:4px" title="anchor photo for the Reactor world"></select>
+    <button id="rx-end" style="flex:0 0 auto;padding:5px 9px" title="disconnect the Reactor session (stops billing)">End session</button>
   </div>
 </div>
 
@@ -155,13 +158,14 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 
 <div id="toast"></div>
 
+<script type="module" src="/static/reactor-client.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const AXES = ["object_moved","object_removed","lighting","occlusion","clutter_added","reflective_surface"];
 let ws, cfg = {}, replaying = false, replayTimer = null;
 // Bytes of image data handed to the generative renderer (Reactor anchor upload).
 // 0 in mock mode because nothing is uploaded. Only the Reactor client increments it.
-let rendererBytes = 0;
+let rendererBytes = 0; Object.defineProperty(window, "rendererBytes", { get: () => rendererBytes, set: v => { rendererBytes = v; } });
 const fmtBytes = n => n < 1024 ? n + " B" : n < 1048576 ? (n/1024).toFixed(1) + " KB" : (n/1048576).toFixed(2) + " MB";
 
 function toast(t){ const e=$("#toast"); e.textContent=t; e.style.opacity=1;
@@ -262,7 +266,8 @@ function apply(f){
   $("#ess").textContent = f.metrics.effective_sample_size.toFixed(1);
   $("#note").textContent = f.render.note || "";
 
-  if (f.render.kind === "webrtc"){ $("#video").style.display="block"; $("#room").style.display="none"; }
+  if (f.render.kind === "webrtc"){ $("#video").style.display="block"; $("#room").style.display="none";
+    if (window.SkoposReactor) window.SkoposReactor.ensure(f.render); }
   else { $("#video").style.display="none"; $("#room").style.display="block"; drawRoom(f.render.detail); }
 
   $("#perturb").innerHTML = (f.perturbation.described||[]).map(d=>`<span>${d}</span>`).join("")
@@ -332,6 +337,11 @@ $("#rep").onclick = async () => {
 };
 
 (async () => {
+  // anchor picker — the kitchen scan fixtures
+  const FIX = ["IMG_6978","IMG_6979","IMG_6980","IMG_6981","IMG_6982","IMG_6983","IMG_6984","IMG_6985","IMG_6986","IMG_6987"];
+  $("#anchor").innerHTML = FIX.map(n=>`<option value="/static/fixtures/${n}.jpg">${n}</option>`).join("");
+  $("#anchor").onchange = e => window.SkoposReactor && window.SkoposReactor.setAnchor(e.target.value);
+  $("#rx-end").onclick = () => window.SkoposReactor && window.SkoposReactor.disconnect();
   cfg = await (await fetch("/api/config")).json();
   $("#task").textContent = cfg.task;
   buildAxes();

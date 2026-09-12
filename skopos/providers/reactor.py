@@ -73,12 +73,26 @@ class ReactorProvider:
         r = httpx.post(
             TOKEN_URL,
             headers={"Reactor-API-Key": self.api_key, "Content-Type": "application/json"},
-            json={"authorization_details": [
-                {"type": "session", "resources": {"models": {"match": [self.model]}}}]},
+            json={
+                # 2h token; the demo window is ~1h and 6h is the hard ceiling.
+                "expires_after": 7200,
+                "authorization_details": [{
+                    "type": "session",
+                    "resources": {"models": {"match": [self.model]}},
+                    # max_sessions defaults to 5 and NEVER refills — a single SDK
+                    # retry storm on a 429 exhausts it and the token is dead.
+                    # 50 leaves room for reconnects. The duration cap is a
+                    # billing backstop: no session can outlive the demo by mistake.
+                    "constraints": {"max_sessions": 50,
+                                    "max_session_duration_seconds": 1800},
+                }],
+            },
             timeout=30,
         )
         r.raise_for_status()
-        self._jwt = r.json()["jwt"]
+        body = r.json()
+        self._jwt = body["jwt"]
+        self.expires_at = body.get("expires_at")
         return self._jwt
 
     def prepare(self, graph: SceneGraph) -> RenderHandle:
