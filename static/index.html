@@ -152,7 +152,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     <div id="readiness">—</div>
     <div class="settle" title="how much of the 120-attempt window is filled"><i id="settle"></i></div>
     <div class="mrow"><span>fetches the mug</span><b id="msucc">—</b></div>
-    <div class="mrow"><span>bumps into something</span><b id="mhaz">—</b></div>
+    <div class="mrow"><span>bumps into things</span><b id="mhaz">—</b></div>
     <div class="mrow"><span>how sure we are</span><b id="mcov">—</b></div>
     <div class="mrow"><span>attempts tried</span><b id="matt">—</b></div>
   </div>
@@ -303,10 +303,10 @@ function apply(f){
     + (m.warming_up ? "  ·  warming up" : (m.placeholder_readiness_smoothed != null ? `  ·  raw ${m.placeholder_readiness.toFixed(0)}` : ""));
   const ci = m.placeholder_success_ci;
   const pm = ci ? ` ±${((ci[1]-ci[0])/2*100).toFixed(0)}` : "";
-  $("#msucc").textContent = (m.placeholder_success_rate*100).toFixed(0) + "% of the time" + pm;
-  $("#mhaz").textContent  = (m.placeholder_hazard_contact_rate*100).toFixed(0) + "% of attempts";
+  $("#msucc").textContent = (m.placeholder_success_rate*100).toFixed(0) + "%" + pm;
+  $("#mhaz").textContent  = (m.placeholder_hazard_contact_rate*100).toFixed(0) + "%";
   $("#mcov").textContent  = (m.coverage_confidence*100).toFixed(0) + "%";
-  $("#matt").textContent  = m.attempts + (m.window_fill != null ? `  (last ${Math.round(m.window_fill*120)} count)` : "");
+  $("#matt").textContent  = m.attempts;
   if (m.window_fill != null) $("#settle").style.width = Math.round(m.window_fill*100) + "%";
   $("#meaning").textContent = m.warming_up ? "first attempts — still learning this room"
     : m.state === "READY" ? "would cope in this room on its own"

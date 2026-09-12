@@ -104,7 +104,6 @@ class Session:
         self.paused = False
         self.history: list[dict] = []
         self.provider_error: str | None = getattr(self, "provider_error", None)
-        self.warm(WARM_STEPS)
 
     def set_axis_scale(self, axis: str, value: float) -> None:
         if axis in AXES:
@@ -204,6 +203,10 @@ async def ws(sock: WebSocket) -> None:
     await sock.accept()
     session = Session(int(os.environ.get("SKOPOS_SEED", "1337")),
                       os.environ.get("SKOPOS_PROVIDER", "mock"))
+    # A full window of attempts before the first frame (~20 ms) so the score is
+    # settled at once. Done here, not in __init__, so a bare Session() stays cold
+    # for checks and tools that want to watch it learn from zero.
+    await asyncio.to_thread(session.warm, WARM_STEPS)
 
     # Mint the Reactor session token ONCE, in a worker thread. prepare() runs
     # inside step() on the event loop; if it had to mint there, one cold
@@ -235,9 +238,11 @@ async def ws(sock: WebSocket) -> None:
                 session.paused = bool(msg.get("value", True))
             elif kind == "reseed":
                 session.__init__(int(msg.get("seed", session.seed)), session.provider_name)
+                await asyncio.to_thread(session.warm, WARM_STEPS)
             elif kind == "reset_scene":
                 LATEST_SCAN = None
                 session.__init__(session.seed, session.provider_name)
+                await asyncio.to_thread(session.warm, WARM_STEPS)
             elif kind == "record":
                 stamp = int(time.time())
                 path = RUNS / f"run-{stamp}-seed{session.seed}.json"
