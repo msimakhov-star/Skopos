@@ -10,7 +10,10 @@ READINESS FORMULA (documented because it will be asked about)
     readiness = 100 * (0.60 * S + 0.25 * (1 - H) + 0.15 * C)
 
     S = importance-weighted success rate over sampled perturbed rooms
-        (self-normalised; see sampler.weighted_failure_rate)
+        (self-normalised; see sampler.weighted_failure_rate). The server
+        feeds it the AUTONOMOUS probe attempt (server.Session.probe), never
+        the deployed bandit's request_human_assist: a human fetching the
+        mug is not the robot being ready.
     H = hazard-contact rate — attempts that physically touched a flagged object
         (fragile / trip / moving), which we weight separately from plain failure
         because breaking a thing is not the same as not finding it

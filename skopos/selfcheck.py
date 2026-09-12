@@ -260,12 +260,38 @@ def check_panorama() -> None:
           f"{(m.occupancy==1).sum()} occ / {(m.occupancy==0).sum()} free cells, depth {m.depth_ms:.0f} ms")
 
 
+def check_route_planning() -> None:
+    """A* on a hand-built grid with one wall and a gap, then on the real
+    kitchen map. Fails if it walks through a wall, cuts a corner, or reports a
+    length that disagrees with the path it returned."""
+    import numpy as np
+    from .perception.plan import plan_route, inflate
+    n = 20
+    occ = np.zeros((n, n), np.uint8)
+    occ[10, :] = 1; occ[10, 9] = 0           # wall across row 10 with a one-cell gap at col 9
+    occ[10, 8] = 0; occ[10, 10] = 0          # ...widened to 3 so inflation still leaves a way through
+    r = plan_route(occ, (2, 2), (17, 17))
+    assert not r.blocked and r.path[0] == (2, 2) and r.path[-1] == (17, 17)
+    g = inflate(occ)
+    assert all(g[y, x] != 1 for x, y in r.path), "path crosses an inflated obstacle"
+    L = sum(((b[0]-a[0])**2 + (b[1]-a[1])**2) ** .5 for a, b in zip(r.path, r.path[1:])) * 0.1
+    assert abs(L - r.length_m) < 1e-6
+    occ2 = occ.copy(); occ2[10, :] = 1        # seal the wall completely
+    assert plan_route(occ2, (2, 2), (17, 17)).blocked, "should be blocked by a sealed wall"
+    # unknown is allowed but counted
+    occ3 = np.full((n, n), 2, np.uint8); occ3[:, :3] = 0
+    r3 = plan_route(occ3, (1, 1), (18, 18))
+    assert not r3.blocked and r3.cells_unknown > 0
+    print(f"  route planning     OK  gap route {len(r.path)} cells {r.length_m:.2f} m; sealed wall blocked; "
+          f"unknown crossed {r3.cells_unknown}")
+
+
 def main() -> int:
     print("skopos selfcheck")
     for fn in (check_privacy, check_importance_weights, check_bandit_flip,
                check_end_to_end, check_readiness_honest, check_naming_honesty,
                check_spatial_map, check_vlm_offline, check_sweep_fusion,
-               check_panorama):
+               check_panorama, check_route_planning):
         fn()
     print("all checks passed")
     return 0

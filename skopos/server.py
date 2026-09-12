@@ -18,6 +18,12 @@ from .perception import MockPerception, PerceptionResult
 from .perception.base import debug_keep_frames
 from .sampler import PerturbationSampler, AXES
 from .agent import LinUCB, FetchMugTask, STRATEGIES
+
+# Readiness is scored on the robot ALONE. The deployed bandit may learn to ask
+# a human, and in a hazardous room it does; asking a human is a fallback, not
+# readiness. Before this, a room with more hazards scored HIGHER than a clean
+# one because the human always succeeds and the formula does not charge for it.
+AUTONOMOUS = tuple(s for s in STRATEGIES if s != "request_human_assist")
 from .metrics import Metrics
 from .providers import MockProvider
 
@@ -90,6 +96,7 @@ class Session:
         self.sampler = PerturbationSampler(seed=seed)
         self.task = FetchMugTask(seed=seed)
         self.bandit = LinUCB(SceneGraph.CONTEXT_DIM)
+        self.probe = LinUCB(SceneGraph.CONTEXT_DIM, arms=AUTONOMOUS)   # feeds readiness
         self.metrics = Metrics()
         self.current: SceneGraph = self.base
         self.paused = False
@@ -107,7 +114,11 @@ class Session:
         arm = self.bandit.select(ctx)
         outcome = self.task.attempt(self.current, arm)
         self.bandit.update(arm, ctx, outcome.reward)
-        self.metrics.record(outcome, p.weight)
+        # Same perturbed room, robot on its own: this attempt is what readiness measures.
+        probe_arm = self.probe.select(ctx)
+        probe = self.task.attempt(self.current, probe_arm)
+        self.probe.update(probe_arm, ctx, probe.reward)
+        self.metrics.record(probe, p.weight)
         handle = self.provider.prepare(self.current)
         report = self.metrics.report()
 
@@ -125,6 +136,8 @@ class Session:
                         "reward": round(outcome.reward, 3),
                         "hazard_hit": outcome.hazard_hit,
                         "blamed_object": outcome.blamed_object},
+            "probe": {"strategy": probe.strategy, "success": probe.success,
+                      "hazard_hit": probe.hazard_hit, "blamed_object": probe.blamed_object},
             "bandit": self.bandit.scores(ctx),
             "metrics": {
                 "placeholder_success_rate": report.placeholder_success_rate,
@@ -285,7 +298,7 @@ async def _pano_map(img, fov: float, source: str = "given") -> dict:
     log.info("pano: %dx%d, assumed fov %.0f -> %d points, depth %.0f ms",
              img.shape[1], img.shape[0], fov, smap.n_points, smap.depth_ms)
     return {"n_points": smap.n_points, "depth_ms": round(smap.depth_ms, 1),
-            "pano_fov_deg": smap.pano_fov_deg, "pano_fov_source": source, "frames_retained": 0,
+            "pano_fov_deg": round(float(smap.pano_fov_deg), 1), "pano_fov_source": source, "frames_retained": 0,
             "cached_as": f"map-{stamp}.json", "note": smap.note}
 
 
@@ -433,6 +446,24 @@ async def scan_map() -> JSONResponse:
     if not maps:
         return JSONResponse({"error": "no map yet"}, status_code=404)
     return JSONResponse(json.loads(maps[-1].read_text()))
+
+
+@app.get("/api/scan/route")
+async def scan_route(gx: int, gy: int) -> JSONResponse:
+    """A* from the camera cell to (gx, gy) over the latest map. Real planning on
+    the real grid; reports how many unknown cells the path had to cross."""
+    from .perception.plan import plan_route, camera_cell
+    import numpy as _np
+    m = LATEST_MAP
+    if m is None:
+        maps = sorted(RUNS.glob("map-*.json"), key=lambda p: p.stat().st_mtime)
+        if not maps:
+            return JSONResponse({"error": "no map yet"}, status_code=404)
+        m = json.loads(maps[-1].read_text())
+    occ = _np.asarray(m["occupancy"], dtype=_np.uint8)
+    start = camera_cell(occ, bool(m.get("centred")))
+    r = plan_route(occ, start, (gx, gy), cell_m=float(m.get("cell_m", 0.1)))
+    return JSONResponse(r.to_dict())
 
 
 @app.get("/api/scan/latest")
