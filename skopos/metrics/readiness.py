@@ -20,7 +20,10 @@ READINESS FORMULA (documented because it will be asked about)
     C = coverage confidence = min(ESS / ESS_TARGET, 1), so a score built on
         twenty effective samples cannot masquerade as one built on two hundred
 
-S, H and ESS are estimated over a SLIDING WINDOW of the last WINDOW (120)
+S, H and ESS are estimated over ALL attempts in the session (cumulative — a
+120-attempt sliding window was tried and, at ~12 effective samples, read 20
+points below the same outcomes scored cumulatively; WINDOW now only scales
+window_fill for the UI). The last
 attempts, not the whole session. The score is a statement about the room as it
 is now. Keeping every attempt since session start meant the bandit's early
 exploration failures dragged the estimate for the rest of the session, and one
@@ -115,9 +118,9 @@ class Metrics:
         self.window = window
         self.alpha = alpha
         self.attempts = 0
-        self.weights: deque[float] = deque(maxlen=window)
-        self.successes: deque[bool] = deque(maxlen=window)
-        self.contacts: deque[bool] = deque(maxlen=window)
+        self.weights: deque[float] = deque()
+        self.successes: deque[bool] = deque()
+        self.contacts: deque[bool] = deque()
         self.recent: deque[bool] = deque(maxlen=60)      # unweighted, sparkline only
         self.blame: dict[str, int] = {}
         self.sparkline: deque[float] = deque(maxlen=120)
@@ -164,7 +167,7 @@ class Metrics:
             placeholder_hazard_contact_rate=r["H"],
             coverage_confidence=r["C"],
             effective_sample_size=r["ess"],
-            window_fill=len(self.weights) / self.window,
+            window_fill=min(self.attempts / self.window, 1.0),
             attempts=self.attempts,
             placeholder_readiness=r["score"],
             placeholder_readiness_smoothed=smoothed,

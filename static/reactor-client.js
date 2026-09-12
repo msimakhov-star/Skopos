@@ -165,7 +165,7 @@ async function connect(detail) {
   });
 
   badge("connecting");
-  await m.connect(detail.jwt, { maxAttempts: 2 });
+  await m.connect(detail.jwt, { maxAttempts: 4 });   // GPU provisioning can take >30 s at busy times
   return m;
 }
 
@@ -214,7 +214,7 @@ async function disconnect(opts) {
   if (!keep) showLive();
   state.paused = false;
   const m = state.model; if (!m) return;
-  try { await idleAll(); } catch (_) {}
+  if (state.started) { try { await idleAll(); } catch (_) {} }   // no commands on a session that never got ready
   try { await m.disconnect(); } catch (_) {}
   state.model = null; state.started = false; state.status = "disconnected";
   badge("disconnected");
