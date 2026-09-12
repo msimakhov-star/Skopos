@@ -102,6 +102,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     <span style="color:var(--faint)">reward <b id="arew" style="color:var(--ink)">—</b></span>
     <span style="color:var(--faint)">cause <b id="acause" style="color:var(--ink)">—</b></span>
     <span style="color:var(--faint);margin-left:auto" id="note"></span>
+    <label style="font:11px var(--mono);color:var(--mute);cursor:pointer" title="a new photo of the SAME room is registered into the existing map instead of starting a new one"><input id="append" type="checkbox" checked style="vertical-align:-1px"> add to scan</label>
     <label style="font:11px var(--mono);color:var(--mute);cursor:pointer;border:1px solid var(--line);padding:5px 9px;background:var(--sunk)" title="scan a room photo into a scene graph (pixels are discarded server-side)">scan photo<input id="scan" type="file" accept="image/jpeg,image/png" multiple style="display:none"></label>
     <span style="font:10px var(--mono);color:var(--faint)">1 photo · several from one spot · or a panorama</span>
     <button id="sweep" style="flex:0 0 auto;padding:5px 9px" title="fuse all nine kitchen photos as a rotating sweep from one spot">fuse 9 photos</button>
@@ -388,8 +389,25 @@ $("#rep").onclick = async () => {
     return j;
   };
   $("#scan").onchange = async e => {
+    // "add to scan": a new photo of the same room joins the existing map; the Reactor world keeps its anchor.
+    if (e.target.files && e.target.files.length === 1 && $("#append") && $("#append").checked) {
+      const st = await fetch("/api/scan/status").then(r => r.json()).catch(() => ({}));
+      const haveMap = !!(st.has_map && st.centred);
+      if (st.has_map && !st.centred) toast("existing map is a single view — fuse or scan a panorama first, then add photos");
+      if (haveMap) {
+        const fd = new FormData(); fd.append("file", e.target.files[0]);
+        toast("registering into the existing scan …");
+        const r = await fetch("/api/scan/append", { method: "POST", body: fd });
+        const j = await r.json().catch(() => ({}));
+        if (!r.ok) { toast(`append failed: ${j.error || r.status}`); e.target.value = ""; return; }
+        toast(`added view ${j.views} · yaw ${j.registered.yaw_deg}° · agreement ${j.registered.score} · known cells ${j.registered.cells_known_before}→${j.registered.cells_known_after}`);
+        window.dispatchEvent(new Event("skopos:scanned"));
+        if (window.SkoposSpatial) window.SkoposSpatial.setMode("map");
+        e.target.value = ""; return;
+      }
+    }
     // The user's own photo is also the Reactor anchor from now on (fixtures stay in the dropdown).
-    if (e.target.files && e.target.files[0] && window.SkoposReactor) window.SkoposReactor.setAnchorFile(e.target.files[0]);
+    if (e.target.files && e.target.files[0] && window.SkoposReactor && !($("#append") && $("#append").checked)) window.SkoposReactor.setAnchorFile(e.target.files[0]);
     const files = Array.from(e.target.files || []); if (!files.length) return;
     e.target.value = "";
     try {

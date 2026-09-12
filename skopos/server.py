@@ -383,6 +383,72 @@ async def scan_sweep(request: Request, fov: float | None = None, sweep: float | 
                          "frames_retained": 0, "cached_as": f"map-{stamp}.json"})
 
 
+@app.get("/api/scan/status")
+async def scan_status() -> JSONResponse:
+    """Cheap probe: is there a map to append to? (GET routes do not answer HEAD.)"""
+    m = LATEST_MAP
+    if m is None:
+        maps = sorted(RUNS.glob("map-*.json"), key=lambda p: p.stat().st_mtime)
+        if maps:
+            try:
+                m = json.loads(maps[-1].read_text())
+            except Exception:
+                m = None
+    return JSONResponse({"has_map": m is not None, "centred": bool(m and m.get("centred")),
+                         "views": int(m.get("views", 1)) if m else 0})
+
+
+@app.post("/api/scan/append")
+async def scan_append(request: Request, fov: float | None = None) -> JSONResponse:
+    """A new photo of the SAME room -> registered into the existing map by yaw
+    search against the retained grid. Never creates a new space. Same privacy
+    contract: parsed in memory, deleted, only numbers survive."""
+    global LATEST_MAP
+    if LATEST_MAP is None:
+        maps = sorted(RUNS.glob("map-*.json"), key=lambda p: p.stat().st_mtime)
+        if not maps:
+            return JSONResponse({"error": "no existing map to append to — scan or fuse first"}, status_code=409)
+        LATEST_MAP = json.loads(maps[-1].read_text())
+    if not LATEST_MAP.get("centred"):
+        return JSONResponse({"error": "existing map is a single forward view; fuse or scan a panorama first"}, status_code=409)
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_SCAN_BYTES:
+            return JSONResponse({"error": "upload larger than 12 MB"}, status_code=413)
+        chunks.append(chunk)
+    frame = _multipart_file(request.headers.get("content-type", ""), b"".join(chunks))
+    del chunks
+    if frame is None or not (frame[:3] == _JPEG or frame[:8] == _PNG):
+        return JSONResponse({"error": "one JPEG/PNG 'file' part required"}, status_code=415)
+    import io as _io
+    import numpy as _np
+    from PIL import Image as _Image
+    from .perception.depth import build_map, build_pano_map
+    from .perception.incremental import append_view
+    img = _np.asarray(_Image.open(_io.BytesIO(frame)).convert("RGB"))
+    del frame
+    h, w = img.shape[:2]
+    is_pano = (w / max(h, 1)) > 2.5
+    def _work():
+        m = build_pano_map(img, _derive_fov(img) if fov is None else _clamp_fov(fov)) if is_pano else build_map(img)
+        return append_view(LATEST_MAP, m), m
+    try:
+        merged, m = await asyncio.to_thread(_work)
+    finally:
+        del img
+    LATEST_MAP = merged
+    stamp = int(time.time())
+    (RUNS / f"map-{stamp}.json").write_text(json.dumps(LATEST_MAP))
+    reg = merged["last_register"]
+    log.info("append: %s view registered yaw=%.0f score=%.2f known %d->%d",
+             "pano" if is_pano else "frame", reg["yaw_deg"], reg["score"],
+             reg["cells_known_before"], reg["cells_known_after"])
+    return JSONResponse({"registered": reg, "views": merged["views"], "kind": "pano" if is_pano else "frame",
+                         "n_points": m.n_points, "depth_ms": round(m.depth_ms, 1),
+                         "frames_retained": 0, "cached_as": f"map-{stamp}.json", "note": merged["note"]})
+
+
 @app.post("/api/scan")
 async def scan(request: Request, map: int = 1) -> JSONResponse:
     global LATEST_SCAN, LATEST_MAP
