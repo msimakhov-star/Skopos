@@ -84,6 +84,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   <div id="stage">
     <canvas id="room"></canvas>
     <video id="video" autoplay playsinline muted></video>
+    <canvas id="spatial" style="position:absolute;inset:0;width:100%;height:100%;display:none"></canvas>
     <div id="hdr">
       <div class="badge">task <b id="task">fetch the mug</b></div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
@@ -91,6 +92,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
         <div class="badge">seed <b id="seed">—</b></div>
         <div class="badge">ess <b id="ess">0</b></div>
         <div class="badge">reactor <b id="rx-status">—</b> · idle <b id="rx-idle">—</b></div>
+        <span style="display:flex;gap:4px;pointer-events:auto" title="stage view: live stream, 3D point cloud, or top-down occupancy map"><button class="badge" data-spatial="stream" style="flex:0 0 auto">stream</button><button class="badge" data-spatial="cloud" style="flex:0 0 auto">cloud</button><button class="badge" data-spatial="map" style="flex:0 0 auto">map</button></span>
       </div>
     </div>
     <div id="perturb"></div>
@@ -160,6 +162,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 <div id="toast"></div>
 
 <script type="module" src="/static/reactor-client.js"></script>
+<script src="/static/spatial.js"></script>
 <script>
 const $ = s => document.querySelector(s);
 const AXES = ["object_moved","object_removed","lighting","occlusion","clutter_added","reflective_surface"];
@@ -351,6 +354,7 @@ $("#rep").onclick = async () => {
     const j = await r.json().catch(() => ({}));
     if (!r.ok) return toast(`scan failed: ${j.error || r.status}`);
     toast(`scene graph: ${j.scene.objects.length} objects via ${j.source} · frames retained ${j.frames_retained}`);
+    window.dispatchEvent(new Event("skopos:scanned"));
     // A running session keeps its old base room; reseed so this one picks up the scan.
     if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "reseed", seed: cfg.seed }));
     e.target.value = "";
