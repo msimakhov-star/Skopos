@@ -33,15 +33,20 @@ MIN_OVERLAP = 0.15   # a candidate must overlap the map on >= this share of its 
 
 def _score(existing: np.ndarray, cand: np.ndarray) -> float:
     """Agreement between two centred grids: +1 per cell both call occupied,
-    +0.25 per cell both call free, -1 per cell one calls occupied and the
-    other free. Unknown cells abstain.
+    +0.25 per cell both call free, -1 per cell where the CANDIDATE puts a wall
+    on floor the map already knows. Unknown cells abstain.
 
-    Normalised by the CANDIDATE's own known cells, not by the overlap. The
-    earlier version divided by the overlap, so a yaw where the rotated view
-    barely touched the map could score 1.00 on two agreeing cells and beat
-    the true fit — a self-append on a 3-photo sweep came back at 138 deg with
-    agreement 1.00. A candidate that overlaps less than MIN_OVERLAP of itself
-    is not a fit at all and scores -1."""
+    Normalised by the candidate's own known cells, not by the overlap (the
+    overlap version let two agreeing cells score 1.00 at a wrong angle).
+
+    The conflict is ONE-SIDED on purpose. A map fused with an assumed arc has
+    its other views a few degrees off, so their walls land inside this view's
+    free wedge. A symmetric penalty charged the candidate for every one of
+    those neighbour walls and the true angle lost: on the nine-photo map with
+    a full turn assumed (the real turn was ~270 deg) the sweep's own first
+    frame registered at 171 deg. A candidate is judged only by where IT puts
+    walls; floor it claims under someone else's wall is evidence about the
+    neighbour, not about it. With that, the same case registers at 0 deg."""
     cand_known = (cand != 2)
     n_cand = int(cand_known.sum())
     if n_cand == 0:
@@ -52,8 +57,8 @@ def _score(existing: np.ndarray, cand: np.ndarray) -> float:
     e, c = existing[known], cand[known]
     both_occ = ((e == 1) & (c == 1)).sum()
     both_free = ((e == 0) & (c == 0)).sum()
-    conflict = ((e == 1) & (c == 0)).sum() + ((e == 0) & (c == 1)).sum()
-    return float(both_occ + 0.25 * both_free - conflict) / float(n_cand)
+    wall_on_known_floor = ((e == 0) & (c == 1)).sum()
+    return float(both_occ + 0.25 * both_free - wall_on_known_floor) / float(n_cand)
 
 
 def register_yaw(existing_occ: np.ndarray, new_pts: np.ndarray) -> tuple[float, float, np.ndarray]:

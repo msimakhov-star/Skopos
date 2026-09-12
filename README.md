@@ -185,6 +185,21 @@ unknown cells allowed at 3× cost. The route reports its length in metres and **
 cells it crossed**, so "planned" is never mistaken for "safe". A goal inside an obstacle reports
 blocked. `GET /api/scan/route?gx=&gy=`.
 
+### Adding a photo into an existing scan
+
+A new photo of the same room is registered against the **retained occupancy grid** — never against
+old photos, which were discarded — by trying every yaw and keeping the one whose walls agree with
+what the map already knows. The new view is judged only by where *it* puts walls: if the map has a
+wall on floor the new view claims, that is evidence the *neighbour* is a few degrees off (an assumed
+arc does that), not that the new view is wrong. A symmetric penalty got this backwards and, on a
+nine-photo map with a full turn assumed, registered the sweep's own first frame at 171° instead of 0°.
+
+Two honest limits. Rotation only: a photo taken from a different spot is still forced onto the same
+origin. And **if you did not turn a full circle, state the arc** (`?sweep=270` or the field beside
+the upload); a partial turn spread over 360° stretches the map and every later registration inherits
+the error. The response carries `registered.yaw_deg` and `registered.score`; a view that fits nowhere
+is refused rather than merged.
+
 ### Readiness that is stable *and* honest
 
 The score fell from 91 to 65 when a moving hazard (the cat) was perturbed near the robot's path.
