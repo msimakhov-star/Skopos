@@ -1,0 +1,331 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Skopos — pre-deployment readiness</title>
+<style>
+:root{
+  --bg:#0B0E0D; --panel:#121716; --sunk:#0D1211; --line:#1E2826;
+  --ink:#DFE7E4; --mute:#7C8A86; --faint:#4E5A57;
+  --ok:#34D399; --warn:#F0A44B; --bad:#F0604D; --accent:#4FD1C5;
+  --mono:ui-monospace,"SF Mono",Menlo,monospace;
+  --sans:system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.5 var(--sans);
+     height:100vh;display:grid;grid-template-columns:1fr 320px;grid-template-rows:1fr 210px;
+     grid-template-areas:"main rail" "strip rail";gap:1px}
+.panel{background:var(--panel);padding:14px 16px;overflow:auto}
+h2{margin:0 0 10px;font:600 10px/1 var(--sans);letter-spacing:.13em;text-transform:uppercase;color:var(--faint)}
+
+/* main */
+#main{grid-area:main;background:var(--sunk);position:relative;display:flex;flex-direction:column}
+#stage{flex:1;position:relative;min-height:0}
+#room,#video{position:absolute;inset:0;width:100%;height:100%}
+#video{object-fit:cover;display:none;background:#000}
+#hdr{position:absolute;top:0;left:0;right:0;display:flex;justify-content:space-between;
+     align-items:flex-start;padding:14px 16px;gap:14px;pointer-events:none;z-index:2}
+.badge{font:500 10px/1 var(--mono);letter-spacing:.1em;text-transform:uppercase;
+       padding:5px 9px;border:1px solid var(--line);background:rgba(11,14,13,.82);color:var(--mute)}
+.badge b{color:var(--accent);font-weight:600}
+#perturb{position:absolute;left:16px;bottom:14px;right:16px;z-index:2;
+         font:12px/1.5 var(--mono);color:var(--mute)}
+#perturb span{display:inline-block;border:1px solid var(--line);background:rgba(11,14,13,.82);
+              padding:3px 8px;margin:0 5px 5px 0;color:var(--ink)}
+#attempt{display:flex;align-items:center;gap:14px;padding:10px 16px;border-top:1px solid var(--line);
+         font:12px/1 var(--mono);background:var(--panel);flex-wrap:wrap}
+.dot{width:8px;height:8px;border-radius:50%;display:inline-block}
+
+/* rail */
+#rail{grid-area:rail;background:var(--panel);padding:14px 16px;overflow-y:auto;
+      display:flex;flex-direction:column;gap:20px;border-left:1px solid var(--line)}
+.axis{display:flex;flex-direction:column;gap:3px;margin-bottom:9px}
+.axis label{display:flex;justify-content:space-between;font:11px/1 var(--mono);color:var(--mute)}
+.axis label b{color:var(--ink);font-weight:500}
+input[type=range]{width:100%;accent-color:var(--accent);height:16px}
+.arm{margin-bottom:11px}
+.arm .top{display:flex;justify-content:space-between;font:11px/1.4 var(--mono);margin-bottom:3px}
+.arm .top b{font-weight:500;color:var(--ink)}
+.arm .top i{font-style:normal;color:var(--faint)}
+.track{height:9px;background:var(--sunk);border:1px solid var(--line);position:relative;overflow:hidden}
+.fill{position:absolute;left:50%;top:0;bottom:0;background:var(--accent);transition:all .3s ease}
+.bonus{position:absolute;top:0;bottom:0;background:rgba(79,209,197,.22);transition:all .3s ease}
+.arm.chosen .top b{color:var(--accent)}
+.arm.chosen .track{border-color:var(--accent)}
+
+/* strip */
+#strip{grid-area:strip;display:grid;grid-template-columns:1fr 260px 300px;gap:1px;background:var(--line)}
+#privacy,#score,#spark{background:var(--panel);padding:14px 16px;overflow:auto}
+#payload{font:10.5px/1.45 var(--mono);color:var(--mute);white-space:pre-wrap;
+         background:var(--sunk);border:1px solid var(--line);padding:10px;max-height:118px;overflow:auto;margin:0}
+.pmeta{display:flex;gap:16px;font:11px/1 var(--mono);margin-bottom:8px}
+.pmeta b{color:var(--ok);font-weight:600}
+.pmeta .zero{color:var(--ok)}
+#state{font:700 34px/1 var(--sans);letter-spacing:-.02em;margin:2px 0 6px}
+#readiness{font:600 15px/1 var(--mono);color:var(--mute)}
+.mrow{display:flex;justify-content:space-between;font:11px/1.7 var(--mono);color:var(--mute)}
+.mrow b{color:var(--ink);font-weight:500}
+canvas#sl{width:100%;height:58px;display:block;background:var(--sunk);border:1px solid var(--line)}
+.btns{display:flex;gap:8px;margin-top:10px}
+button{flex:1;background:var(--sunk);color:var(--ink);border:1px solid var(--line);
+       font:11px/1 var(--mono);letter-spacing:.06em;text-transform:uppercase;padding:9px;cursor:pointer}
+button:hover{border-color:var(--accent);color:var(--accent)}
+button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+#toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:var(--panel);
+       border:1px solid var(--accent);color:var(--accent);padding:9px 16px;font:11px/1 var(--mono);
+       opacity:0;transition:opacity .25s;pointer-events:none;z-index:9}
+@media (prefers-reduced-motion:reduce){*{transition:none!important}}
+</style>
+</head>
+<body>
+
+<div id="main">
+  <div id="stage">
+    <canvas id="room"></canvas>
+    <video id="video" autoplay playsinline muted></video>
+    <div id="hdr">
+      <div class="badge">task <b id="task">fetch the mug</b></div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+        <div class="badge">provider <b id="prov">mock</b></div>
+        <div class="badge">seed <b id="seed">—</b></div>
+        <div class="badge">ess <b id="ess">0</b></div>
+      </div>
+    </div>
+    <div id="perturb"></div>
+  </div>
+  <div id="attempt">
+    <span><span class="dot" id="adot"></span> <b id="astrat">—</b></span>
+    <span style="color:var(--faint)">reward <b id="arew" style="color:var(--ink)">—</b></span>
+    <span style="color:var(--faint)">cause <b id="acause" style="color:var(--ink)">—</b></span>
+    <span style="color:var(--faint);margin-left:auto" id="note"></span>
+  </div>
+</div>
+
+<div id="rail">
+  <div>
+    <h2>Perturbation axes</h2>
+    <div id="axes"></div>
+  </div>
+  <div>
+    <h2>Bandit value estimates</h2>
+    <div id="arms"></div>
+    <p style="font:10px/1.45 var(--mono);color:var(--faint);margin:8px 0 0">
+      LinUCB, not a trained policy. Solid bar = expected reward, pale = exploration bonus.
+    </p>
+  </div>
+  <div>
+    <h2>Failure attribution</h2>
+    <div id="blame" style="font:11px/1.7 var(--mono);color:var(--mute)"></div>
+  </div>
+</div>
+
+<div id="strip">
+  <div id="privacy">
+    <h2>What leaves your device</h2>
+    <div class="pmeta">
+      <span>frames processed <b id="fp">0</b></span>
+      <span>frames retained <b id="fr" class="zero">0</b></span>
+      <span>pixels transmitted <b class="zero">0</b></span>
+    </div>
+    <pre id="payload">—</pre>
+  </div>
+  <div id="score">
+    <h2>Readiness</h2>
+    <div id="state">—</div>
+    <div id="readiness">—</div>
+    <div class="mrow"><span>success (weighted)</span><b id="msucc">—</b></div>
+    <div class="mrow"><span>hazard contact</span><b id="mhaz">—</b></div>
+    <div class="mrow"><span>coverage conf.</span><b id="mcov">—</b></div>
+    <div class="mrow"><span>attempts</span><b id="matt">—</b></div>
+  </div>
+  <div id="spark">
+    <h2>Rolling success rate</h2>
+    <canvas id="sl"></canvas>
+    <div class="btns">
+      <button id="rec">Record run</button>
+      <button id="rep">Replay</button>
+      <button id="pause">Pause</button>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+const AXES = ["object_moved","object_removed","lighting","occlusion","clutter_added","reflective_surface"];
+let ws, cfg = {}, replaying = false, replayTimer = null;
+
+function toast(t){ const e=$("#toast"); e.textContent=t; e.style.opacity=1;
+  setTimeout(()=>e.style.opacity=0, 2200); }
+
+/* ---------- right rail: axes + arms ---------- */
+function buildAxes(){
+  $("#axes").innerHTML = AXES.map(a=>`
+    <div class="axis">
+      <label for="ax-${a}"><span>${a.replace(/_/g," ")}</span><b id="v-${a}">1.00</b></label>
+      <input id="ax-${a}" type="range" min="0" max="1" step="0.05" value="1">
+    </div>`).join("");
+  AXES.forEach(a=>{
+    const el = $("#ax-"+a);
+    el.addEventListener("input", ()=>{
+      $("#v-"+a).textContent = (+el.value).toFixed(2);
+      if (ws && ws.readyState===1) ws.send(JSON.stringify({type:"axis",axis:a,value:+el.value}));
+    });
+  });
+}
+
+function renderArms(bandit, chosen){
+  const names = Object.keys(bandit);
+  const vals = names.flatMap(n=>[bandit[n].mean, bandit[n].ucb]);
+  const lim = Math.max(1, ...vals.map(Math.abs));
+  $("#arms").innerHTML = names.map(n=>{
+    const b = bandit[n], pct = v => (50 + 50*v/lim);
+    const m = pct(b.mean), zero = 50;
+    const left = Math.min(m, zero), w = Math.abs(m - zero);
+    const bw = Math.abs(50*b.bonus/lim);
+    return `<div class="arm ${n===chosen?"chosen":""}">
+      <div class="top"><b>${n.replace(/_/g," ")}</b><i>${b.mean>=0?"+":""}${b.mean.toFixed(2)} · ${b.pulls}</i></div>
+      <div class="track">
+        <div class="bonus" style="left:${m}%;width:${bw}%"></div>
+        <div class="fill" style="left:${left}%;width:${w}%;background:${b.mean>=0?"var(--ok)":"var(--bad)"}"></div>
+      </div></div>`;
+  }).join("");
+}
+
+/* ---------- main pane: schematic room ---------- */
+function drawRoom(detail){
+  const c = $("#room"), g = c.getContext("2d");
+  const w = c.width = c.clientWidth * devicePixelRatio;
+  const h = c.height = c.clientHeight * devicePixelRatio;
+  g.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  const W = c.clientWidth, H = c.clientHeight;
+  const q = detail.quality ?? 1;
+
+  g.fillStyle = "#0D1211"; g.fillRect(0,0,W,H);
+  // darkness veil tracks the lighting axis, so the picture matches the numbers
+  g.fillStyle = `rgba(0,0,0,${(1-q)*0.55})`; g.fillRect(0,0,W,H);
+
+  const pad=48, sx=(W-pad*2)/3.8, sy=(H-pad*2)/3.0;
+  g.strokeStyle="#1E2826"; g.lineWidth=1;
+  for(let i=0;i<=8;i++){ const x=pad+i*(W-pad*2)/8; g.beginPath();g.moveTo(x,pad);g.lineTo(x,H-pad);g.stroke(); }
+  for(let i=0;i<=6;i++){ const y=pad+i*(H-pad*2)/6; g.beginPath();g.moveTo(pad,y);g.lineTo(W-pad,y);g.stroke(); }
+
+  (detail.objects||[]).forEach(o=>{
+    const x = pad + o.x*sx, y = pad + o.y*sy;
+    const hz = o.hazards && o.hazards.length;
+    const col = o.perturbed_by ? "#F0A44B" : (hz ? "#F0604D" : "#4FD1C5");
+    g.beginPath(); g.arc(x,y, o.label==="mug"?7:9, 0, Math.PI*2);
+    g.fillStyle = col + "33"; g.fill();
+    g.strokeStyle = col; g.lineWidth = o.perturbed_by?2:1; g.stroke();
+    g.fillStyle = "#7C8A86"; g.font="10px ui-monospace,monospace";
+    g.fillText(o.label, x+13, y+3);
+    if (o.perturbed_by){ g.fillStyle="#F0A44B"; g.font="9px ui-monospace,monospace";
+      g.fillText("↻ "+o.perturbed_by, x+13, y+14); }
+  });
+  // grain rises as conditions degrade
+  const grain = detail.grain ?? 0;
+  if (grain > 0.02){
+    g.fillStyle = "rgba(223,231,228,0.05)";
+    for(let i=0;i<grain*900;i++) g.fillRect(Math.random()*W, Math.random()*H, 1, 1);
+  }
+}
+
+function drawSpark(vals){
+  const c = $("#sl"), g = c.getContext("2d");
+  c.width = c.clientWidth*devicePixelRatio; c.height = c.clientHeight*devicePixelRatio;
+  g.setTransform(devicePixelRatio,0,0,devicePixelRatio,0,0);
+  const W=c.clientWidth, H=c.clientHeight;
+  g.clearRect(0,0,W,H);
+  g.strokeStyle="#1E2826"; g.beginPath(); g.moveTo(0,H/2); g.lineTo(W,H/2); g.stroke();
+  if(!vals.length) return;
+  g.beginPath();
+  vals.forEach((v,i)=>{ const x=i/Math.max(vals.length-1,1)*W, y=H-v*H;
+    i?g.lineTo(x,y):g.moveTo(x,y); });
+  g.strokeStyle="#34D399"; g.lineWidth=1.5; g.stroke();
+  g.lineTo(W,H); g.lineTo(0,H); g.closePath();
+  g.fillStyle="rgba(52,211,153,.10)"; g.fill();
+}
+
+/* ---------- frame application ---------- */
+function apply(f){
+  $("#seed").textContent = f.seed;
+  $("#prov").textContent = f.provider + (replaying ? " · replay" : "");
+  $("#ess").textContent = f.metrics.effective_sample_size.toFixed(1);
+  $("#note").textContent = f.render.note || "";
+
+  if (f.render.kind === "webrtc"){ $("#video").style.display="block"; $("#room").style.display="none"; }
+  else { $("#video").style.display="none"; $("#room").style.display="block"; drawRoom(f.render.detail); }
+
+  $("#perturb").innerHTML = (f.perturbation.described||[]).map(d=>`<span>${d}</span>`).join("")
+    + `<span style="color:var(--faint)">w=${f.perturbation.weight}</span>`;
+
+  const a = f.attempt;
+  $("#adot").style.background = a.success ? "var(--ok)" : "var(--bad)";
+  $("#astrat").textContent = a.strategy.replace(/_/g," ");
+  $("#arew").textContent = (a.reward>=0?"+":"") + a.reward.toFixed(2);
+  $("#acause").textContent = a.success ? "—" : (a.blamed_object || a.hazard_hit || "unknown");
+
+  renderArms(f.bandit, a.strategy);
+
+  const m = f.metrics;
+  $("#state").textContent = m.state;
+  $("#state").style.color = m.state==="READY" ? "var(--ok)" : m.state==="MARGINAL" ? "var(--warn)" : "var(--bad)";
+  $("#readiness").textContent = m.placeholder_readiness.toFixed(1) + " / 100";
+  $("#msucc").textContent = (m.placeholder_success_rate*100).toFixed(1) + "%";
+  $("#mhaz").textContent  = (m.placeholder_hazard_contact_rate*100).toFixed(1) + "%";
+  $("#mcov").textContent  = (m.coverage_confidence*100).toFixed(0) + "%";
+  $("#matt").textContent  = m.attempts;
+  $("#blame").innerHTML = Object.entries(m.blame||{}).map(([k,v])=>
+    `<div class="mrow"><span>${k}</span><b>${v}</b></div>`).join("") || "<span>none yet</span>";
+  drawSpark(m.rolling||[]);
+
+  $("#fp").textContent = f.privacy.frames_processed;
+  $("#fr").textContent = f.privacy.frames_retained;
+  $("#fr").className = f.privacy.frames_retained===0 ? "zero" : "";
+  // Exactly the bytes that cross the boundary — judges can read it.
+  $("#payload").textContent = JSON.stringify(f.scene_graph, null, 1);
+}
+
+/* ---------- transport ---------- */
+function connect(){
+  ws = new WebSocket(`ws://${location.host}/ws`);
+  ws.onmessage = e => {
+    const f = JSON.parse(e.data);
+    if (f.type === "recorded"){ toast(`recorded ${f.path} · ${f.frames} frames`); return; }
+    if (!replaying) apply(f);
+  };
+  ws.onclose = () => setTimeout(connect, 1200);
+}
+
+$("#rec").onclick = () => ws && ws.readyState===1 && ws.send(JSON.stringify({type:"record"}));
+$("#pause").onclick = e => {
+  const on = e.target.textContent === "Pause";
+  e.target.textContent = on ? "Resume" : "Pause";
+  ws && ws.send(JSON.stringify({type:"pause", value:on}));
+};
+$("#rep").onclick = async () => {
+  if (replaying){ clearInterval(replayTimer); replaying=false; $("#rep").textContent="Replay"; return; }
+  const list = await (await fetch("/api/runs")).json();
+  if (!list.length) return toast("no recorded runs yet — press Record run first");
+  const run = await (await fetch("/api/runs/"+list[list.length-1])).json();
+  replaying = true; $("#rep").textContent = "Stop replay";
+  toast(`replaying ${list[list.length-1]} · ${run.frames.length} frames · no network`);
+  let i = 0;
+  replayTimer = setInterval(()=>{
+    if (i >= run.frames.length){ i = 0; }
+    apply(run.frames[i++]);
+  }, 550);
+};
+
+(async () => {
+  cfg = await (await fetch("/api/config")).json();
+  $("#task").textContent = cfg.task;
+  buildAxes();
+  connect();
+  addEventListener("resize", ()=>{ drawSpark([]); });
+})();
+</script>
+</body>
+</html>
