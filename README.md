@@ -168,6 +168,15 @@ FOV (a 4.2:1 strip → ~290°), and you can override it with `?fov=`. It matters
 Too small an assumption collapses the floor band the scale is fitted on and the map goes blank.
 The map's note always states the FOV it used and whether it was derived or given.
 
+### Route planning on the map
+
+Click any cell on the **map** view and an A* path draws from where you stood to that cell, over the
+real occupancy grid. The planner is `skopos/perception/plan.py` — Python, with a runnable check —
+not a drawing: 8-connected, obstacles inflated by one cell for the robot's body, no corner-cutting,
+unknown cells allowed at 3× cost. The route reports its length in metres and **how many unknown
+cells it crossed**, so "planned" is never mistaken for "safe". A goal inside an obstacle reports
+blocked. `GET /api/scan/route?gx=&gy=`.
+
 ### Readiness that is stable *and* honest
 
 The score fell from 91 to 65 when a moving hazard (the cat) was perturbed near the robot's path.

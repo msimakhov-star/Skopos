@@ -44,6 +44,36 @@
   function lift() { const p = $("perturb"); return (p ? p.offsetHeight : 0) + 24; }
 
   /* ---------- cloud ---------- */
+  // ---- route (A* on the server, drawn here) ----
+  let route = null;                        // {path:[[gx,gy],...], length_m, cells_unknown, blocked, goal}
+  let mapGeom = null;                      // {cs, ox, oy, rows} of the last drawMap
+  async function planTo(gx, gy) {
+    try {
+      const r = await fetch(`/api/scan/route?gx=${gx}&gy=${gy}`);
+      route = r.ok ? await r.json() : null;
+    } catch (_) { route = null; }
+    draw();
+  }
+  function drawRoute(g) {
+    if (!route || !mapGeom) return;
+    const { cs, ox, oy, rows } = mapGeom;
+    const px = ([x, y]) => [ox + (x + 0.5) * cs, oy + (rows - 1 - y + 0.5) * cs];
+    if (!route.blocked && route.path.length > 1) {
+      g.beginPath();
+      route.path.forEach((p, i) => { const [x, y] = px(p); i ? g.lineTo(x, y) : g.moveTo(x, y); });
+      g.strokeStyle = COL.accent; g.lineWidth = Math.max(2, cs * 0.45); g.lineJoin = "round"; g.lineCap = "round";
+      g.globalAlpha = 0.9; g.stroke(); g.globalAlpha = 1;
+    }
+    const [gx, gy] = px(route.goal);
+    g.strokeStyle = route.blocked ? COL.occ : COL.accent; g.lineWidth = 2;
+    g.beginPath(); g.arc(gx, gy, Math.max(4, cs * 0.6), 0, Math.PI * 2); g.stroke();
+    g.fillStyle = COL.text; g.font = "11px ui-monospace, monospace"; g.textAlign = "left";
+    const label = route.blocked
+      ? "route: blocked — goal is inside an obstacle"
+      : `route ${route.length_m} m · ${route.path.length} cells · ${route.cells_unknown} unknown crossed`;
+    g.fillText(label, ox, oy - 6);
+  }
+
   function drawCloud() {
     const { g, W, H } = setup();
     const cy = Math.cos(cam.yaw), sy = Math.sin(cam.yaw), cp = Math.cos(cam.pitch), sp = Math.sin(cam.pitch);
@@ -99,6 +129,7 @@
     const occ = data.occupancy, rows = occ.length, colsN = occ[0].length;
     const lf = lift(), pad = 24, side = Math.max(10, Math.min(W - pad * 2, H - pad - lf));
     const cs = side / rows, ox = (W - side) / 2, oy = pad + (H - pad - lf - side) / 2;
+    mapGeom = { cs, ox, oy, rows };
     const fill = { 0: COL.free, 1: COL.occ, 2: COL.unk };
     for (let r = 0; r < rows; r++) {                 // row 0 nearest the camera -> bottom
       const y = oy + (rows - 1 - r) * cs;
@@ -125,12 +156,13 @@
     g.fillStyle = COL.text; g.textAlign = "left";
     g.fillText(`depth ${Number(data.depth_ms).toFixed(1)} ms · ${data.n_points} points`, 12, H - lf - 14);
     g.fillText(data.note || "", 12, H - lf);
+    drawRoute(g);
   }
 
   function draw() {
     if (mode === "stream") return;
     const c = $("spatial"); if (!c) return;
-    c.style.cursor = mode === "cloud" ? "grab" : "default";
+    c.style.cursor = mode === "cloud" ? "grab" : (mode === "map" ? "crosshair" : "default");
     if (!data) return message("no scan yet — press scan photo");
     mode === "cloud" ? drawCloud() : drawMap();
   }
@@ -139,6 +171,7 @@
 
   /* ---------- public ---------- */
   async function load() {
+    route = null;
     try {
       const r = await fetch("/api/scan/map");
       if (!r.ok) { data = cols = null; draw(); return; }
@@ -176,7 +209,17 @@
   if (c) {
     c.style.touchAction = "none";
     let drag = null;
-    c.addEventListener("pointerdown", e => { if (mode !== "cloud") return; drag = [e.clientX, e.clientY]; c.setPointerCapture(e.pointerId); c.style.cursor = "grabbing"; });
+    c.addEventListener("pointerdown", e => {
+      if (mode === "map" && mapGeom && data) {
+        const rect = c.getBoundingClientRect();
+        const x = e.clientX - rect.left, y = e.clientY - rect.top;
+        const { cs, ox, oy, rows } = mapGeom;
+        const gx = Math.floor((x - ox) / cs), gy = rows - 1 - Math.floor((y - oy) / cs);
+        if (gx >= 0 && gx < rows && gy >= 0 && gy < rows) planTo(gx, gy);
+        return;
+      }
+      if (mode !== "cloud") return; drag = [e.clientX, e.clientY]; c.setPointerCapture(e.pointerId); c.style.cursor = "grabbing";
+    });
     c.addEventListener("pointermove", e => {
       if (!drag) return;
       const dx = e.clientX - drag[0], dy = e.clientY - drag[1]; drag = [e.clientX, e.clientY];

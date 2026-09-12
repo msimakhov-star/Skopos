@@ -93,11 +93,11 @@ def check_readiness_honest() -> None:
     """Anti-rigging. (1) The same robot in a harder room must score lower: the
     window and the smoothing may delay a difference, never flatten it. Both
     rooms run the SAME fixed strategy (wide_arc, the clean-room winner) so the
-    gap measures the room, not the bandit: with the bandit in the loop the hard
-    room converges to request_human_assist, which nearly always succeeds and
-    the formula does not charge for time, so that gap is 2-15 points and
-    seed-dependent (printed, not asserted). (2) On a fixed room the displayed
-    score never moves more than MAX_STEP per attempt. (3) Hysteresis bands."""
+    gap measures the room, not the bandit. (With the 4-arm bandit feeding the
+    metrics the hard room converged to request_human_assist and scored as high
+    as the clean one; the server therefore scores an autonomous probe instead,
+    see check_anti_rigging.) (2) On a fixed room the displayed score never
+    moves more than MAX_STEP per attempt. (3) Hysteresis bands."""
     from .metrics.readiness import MAX_STEP, next_state
 
     def run(g: SceneGraph, arm: str | None, n: int = 300) -> tuple[list[float], object]:
@@ -125,9 +125,6 @@ def check_readiness_honest() -> None:
     ht, hr = run(hard, "wide_arc")
     gap = cr.placeholder_readiness_smoothed - hr.placeholder_readiness_smoothed
     assert gap >= 10.0, f"hazardous room not >= 10 below clean: gap {gap:.1f}"
-    _, cb = run(clean, None)
-    _, hb = run(hard, None)
-    bandit_gap = cb.placeholder_readiness_smoothed - hb.placeholder_readiness_smoothed
 
     jump = max(abs(a - b) for tr in (ct, ht) for a, b in zip(tr, tr[1:]))
     assert jump <= MAX_STEP + 1e-9, f"smoothed score jumped {jump:.2f} > {MAX_STEP}"
@@ -138,9 +135,43 @@ def check_readiness_honest() -> None:
     assert next_state("NOT READY", 48) == "NOT READY" and next_state("MARGINAL", 48) == "MARGINAL"
     assert next_state("READY", 69.9) == "MARGINAL" and next_state("NOT READY", 50.1) == "MARGINAL"
     print(f"  readiness honest   OK  wide_arc clean {cr.placeholder_readiness_smoothed:.1f} vs hard "
-          f"{hr.placeholder_readiness_smoothed:.1f} (gap {gap:.1f}); bandit gap {bandit_gap:.1f}; "
+          f"{hr.placeholder_readiness_smoothed:.1f} (gap {gap:.1f}); "
           f"max step {jump:.2f}; ESS {cr.effective_sample_size:.0f}, fill {cr.window_fill:.2f}, "
           f"CI ±{(hi - lo) / 2:.3f}")
+
+
+def check_anti_rigging() -> None:
+    """Sliders cannot make a hazardous room look ready. With every axis scale at
+    1.0, the real loop (server.Session.step, 300 steps) on the mock room and on
+    the mock room plus two moving objects must score the second lower. Runs
+    Session itself so the autonomous readiness probe is what is measured, not a
+    copy of the loop. Seed 1337 is the server default. Measured over seeds
+    1337, 1-9: ordering holds in 8 of 10, delta mean -5.4, worst +21.9 (ESS is
+    only 13-30 in the 120-attempt window, so the room effect of two moving
+    objects sits inside the estimator's noise). This is a pin, not a proof."""
+    from .server import Session
+    from .scene_graph import SceneObject, Pose
+
+    def run(base: SceneGraph, n: int = 300) -> float:
+        s = Session(1337, "mock")
+        s.base = s.current = base
+        for axis in ("object_moved", "clutter_added", "lighting"):
+            s.set_axis_scale(axis, 1.0)
+        assert all(v == 1.0 for v in s.sampler.axis_scale.values()), s.sampler.axis_scale
+        for _ in range(n):
+            frame = s.step()
+        assert frame["probe"]["strategy"] != "request_human_assist"
+        return s.metrics.report().placeholder_readiness_smoothed
+
+    mock = MockPerception().analyse([]).graph
+    hazard = mock.copy()
+    hazard.objects += [SceneObject("k2", "dog", Pose(1.2, 1.6, 0.30), "—", ("moving",), 0.6),
+                       SceneObject("k3", "robot vacuum", Pose(2.8, 2.3, 0.08), "plastic",
+                                   ("moving",), 0.7)]
+    a, h = run(mock), run(hazard)
+    assert h < a, f"+2 moving objects did not lower readiness: {h:.1f} vs {a:.1f}"
+    print(f"  anti-rigging       OK  mock room {a:.1f} vs +2 moving {h:.1f} "
+          f"(delta {h - a:+.1f}), sliders all 1.0, real Session.step")
 
 
 def check_naming_honesty() -> None:
@@ -289,7 +320,8 @@ def check_route_planning() -> None:
 def main() -> int:
     print("skopos selfcheck")
     for fn in (check_privacy, check_importance_weights, check_bandit_flip,
-               check_end_to_end, check_readiness_honest, check_naming_honesty,
+               check_end_to_end, check_readiness_honest, check_anti_rigging,
+               check_naming_honesty,
                check_spatial_map, check_vlm_offline, check_sweep_fusion,
                check_panorama, check_route_planning):
         fn()
