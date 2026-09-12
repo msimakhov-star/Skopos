@@ -66,6 +66,8 @@ input[type=range]{width:100%;accent-color:var(--accent);height:16px}
 #readiness{font:600 15px/1 var(--mono);color:var(--mute)}
 .mrow{display:flex;justify-content:space-between;font:11px/1.7 var(--mono);color:var(--mute)}
 .mrow b{color:var(--ink);font-weight:500}
+.settle{height:4px;background:var(--sunk);border:1px solid var(--line);margin:4px 0 8px;overflow:hidden}
+.settle i{display:block;height:100%;width:0;background:var(--accent);transition:width .3s}
 canvas#sl{width:100%;height:58px;display:block;background:var(--sunk);border:1px solid var(--line)}
 .btns{display:flex;gap:8px;margin-top:10px}
 button{flex:1;background:var(--sunk);color:var(--ink);border:1px solid var(--line);
@@ -146,11 +148,13 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
   <div id="score">
     <h2>Readiness</h2>
     <div id="state">—</div>
+    <div id="meaning" style="font:12px/1.4 var(--sans);color:var(--mute);margin:-2px 0 6px">—</div>
     <div id="readiness">—</div>
-    <div class="mrow"><span>success (weighted)</span><b id="msucc">—</b></div>
-    <div class="mrow"><span>hazard contact</span><b id="mhaz">—</b></div>
-    <div class="mrow"><span>coverage conf.</span><b id="mcov">—</b></div>
-    <div class="mrow"><span>attempts</span><b id="matt">—</b></div>
+    <div class="settle" title="how much of the 120-attempt window is filled"><i id="settle"></i></div>
+    <div class="mrow"><span>fetches the mug</span><b id="msucc">—</b></div>
+    <div class="mrow"><span>bumps into something</span><b id="mhaz">—</b></div>
+    <div class="mrow"><span>how sure we are</span><b id="mcov">—</b></div>
+    <div class="mrow"><span>attempts tried</span><b id="matt">—</b></div>
   </div>
   <div id="spark">
     <h2>Rolling success rate</h2>
@@ -297,10 +301,17 @@ function apply(f){
   const sm = (m.placeholder_readiness_smoothed ?? m.placeholder_readiness);
   $("#readiness").textContent = sm.toFixed(1) + " / 100"
     + (m.warming_up ? "  ·  warming up" : (m.placeholder_readiness_smoothed != null ? `  ·  raw ${m.placeholder_readiness.toFixed(0)}` : ""));
-  $("#msucc").textContent = (m.placeholder_success_rate*100).toFixed(1) + "%";
-  $("#mhaz").textContent  = (m.placeholder_hazard_contact_rate*100).toFixed(1) + "%";
+  const ci = m.placeholder_success_ci;
+  const pm = ci ? ` ±${((ci[1]-ci[0])/2*100).toFixed(0)}` : "";
+  $("#msucc").textContent = (m.placeholder_success_rate*100).toFixed(0) + "% of the time" + pm;
+  $("#mhaz").textContent  = (m.placeholder_hazard_contact_rate*100).toFixed(0) + "% of attempts";
   $("#mcov").textContent  = (m.coverage_confidence*100).toFixed(0) + "%";
-  $("#matt").textContent  = m.attempts;
+  $("#matt").textContent  = m.attempts + (m.window_fill != null ? `  (last ${Math.round(m.window_fill*120)} count)` : "");
+  if (m.window_fill != null) $("#settle").style.width = Math.round(m.window_fill*100) + "%";
+  $("#meaning").textContent = m.warming_up ? "first attempts — still learning this room"
+    : m.state === "READY" ? "would cope in this room on its own"
+    : m.state === "MARGINAL" ? "would cope with a human on call"
+    : "not for this room as it is";
   { const bl = JSON.stringify(m.blame||{});
     if (bl !== apply._lastBlame) { apply._lastBlame = bl;
       $("#blame").innerHTML = Object.entries(m.blame||{}).map(([k,v])=>

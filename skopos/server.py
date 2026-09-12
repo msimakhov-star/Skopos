@@ -36,6 +36,8 @@ RUNS = ROOT / "runs"
 RUNS.mkdir(exist_ok=True)
 
 app = FastAPI(title="Skopos")
+WARM_STEPS = 120          # = metrics WINDOW; the first frame is a full window
+TICK_S = 0.35             # was 0.55; step() costs 0.3 ms, the browser keeps up
 
 # Set by POST /api/scan. New Sessions start from it instead of the mock room;
 # the "reset_scene" WebSocket message clears it.
@@ -102,10 +104,25 @@ class Session:
         self.paused = False
         self.history: list[dict] = []
         self.provider_error: str | None = getattr(self, "provider_error", None)
+        self.warm(WARM_STEPS)
 
     def set_axis_scale(self, axis: str, value: float) -> None:
         if axis in AXES:
             self.sampler.axis_scale[axis] = max(0.0, min(1.0, value))
+
+    def warm(self, n: int) -> None:
+        """Run n attempts without rendering so the FIRST frame already carries a
+        full window (WINDOW=120 -> ~40 ms of CPU). The score then means
+        something immediately instead of after a minute of watching the bars
+        settle. These are real simulated attempts, counted as such."""
+        for _ in range(n):
+            p = self.sampler.sample()
+            self.current = self.sampler.apply(self.base, p)
+            ctx = self.current.context_vector()
+            arm = self.bandit.select(ctx)
+            outcome = self.task.attempt(self.current, arm)
+            self.bandit.update(arm, ctx, outcome.reward)
+            self.metrics.record(outcome, p.weight)
 
     def step(self) -> dict:
         p = self.sampler.sample()
@@ -148,6 +165,7 @@ class Session:
                 "placeholder_readiness": report.placeholder_readiness,
                 "placeholder_readiness_smoothed": report.placeholder_readiness_smoothed,
                 "warming_up": report.warming_up,
+                "window_fill": report.window_fill,
                 "placeholder_success_ci": list(report.placeholder_success_ci),
                 "state": report.state,
                 "blame": report.blame,
@@ -204,7 +222,7 @@ async def ws(sock: WebSocket) -> None:
         while True:
             if not session.paused:
                 await sock.send_json(session.step())
-            await asyncio.sleep(0.55)
+            await asyncio.sleep(TICK_S)
 
     task = asyncio.create_task(pump())
     try:
