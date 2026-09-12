@@ -291,7 +291,7 @@ async def _pano_map(img, fov: float, source: str = "given") -> dict:
     """Panorama pixels -> LATEST_MAP + runs/ cache, in a worker thread. Returns
     the response body. The caller deletes the pixels."""
     global LATEST_MAP
-    from .perception.depth import build_pano_map
+    from .perception.depth import HFOV_DEG, build_pano_map
     smap = await asyncio.to_thread(build_pano_map, img, fov)
     stamp = int(time.time())
     LATEST_MAP = smap.to_dict()
@@ -331,7 +331,7 @@ async def scan_pano(request: Request, fov: float | None = None) -> JSONResponse:
 
 
 @app.post("/api/scan/sweep")
-async def scan_sweep(request: Request, fov: float | None = None) -> JSONResponse:
+async def scan_sweep(request: Request, fov: float | None = None, sweep: float | None = None) -> JSONResponse:
     """Several photos of ONE spot, turning -> one fused 360-ish map.
 
     Same privacy contract as /api/scan: frames are parsed in memory, fused in a
@@ -350,7 +350,7 @@ async def scan_sweep(request: Request, fov: float | None = None) -> JSONResponse
     frames = [f for f in frames if f and (f[:3] == _JPEG or f[:8] == _PNG)]
     if not frames:
         return JSONResponse({"error": "need at least two JPEG/PNG 'file' parts"}, status_code=400)
-    from .perception.depth import fuse_sweep
+    from .perception.depth import fuse_sweep, HFOV_DEG
     imgs = [_decode_rgb(f) for f in frames]
     n_bytes = sum(len(f) for f in frames)
     del frames
@@ -365,7 +365,7 @@ async def scan_sweep(request: Request, fov: float | None = None) -> JSONResponse
         del imgs
         return JSONResponse({"error": "need at least two JPEG/PNG 'file' parts"}, status_code=400)
     try:
-        smap = await asyncio.to_thread(fuse_sweep, imgs)
+        smap = await asyncio.to_thread(fuse_sweep, imgs, HFOV_DEG, sweep)
     finally:
         del imgs
     stamp = int(time.time())
@@ -374,7 +374,7 @@ async def scan_sweep(request: Request, fov: float | None = None) -> JSONResponse
     log.info("sweep: %d photos, %d bytes -> %d points; yaws %s; %s",
              len(smap.yaws or []), n_bytes, smap.n_points, smap.yaws, smap.used)
     return JSONResponse({"photos": len(smap.yaws or []), "n_points": smap.n_points,
-                         "yaws": smap.yaws, "placed_by": smap.used,
+                         "yaws": smap.yaws, "sweep_deg": smap.sweep_deg, "placed_by": smap.used,
                          "depth_ms": round(smap.depth_ms, 1), "note": smap.note,
                          "frames_retained": 0, "cached_as": f"map-{stamp}.json"})
 

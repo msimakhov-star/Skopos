@@ -145,10 +145,18 @@ scan (verified: 5 s on venue wifi).
 
 ### Several photos, or a panorama
 
-- **Several photos from one spot** — pick them all in *scan photo*. They are fused as a rotating sweep:
-  the turn between consecutive photos is estimated from their overlap, and when the overlap is too
-  thin to trust, that photo is placed by even spacing (360°/N). The toast and the map's note say
-  which joins came from overlap and which were assumed. Camera at the centre of the map.
+- **Several photos from one spot** — pick them all in *scan photo*. They are fused as a rotating
+  sweep. The turn between consecutive photos is *measured* only when two independent estimators
+  (phase correlation and brute-force NCC) agree in sign and within 8°, the NCC clears 0.4, and the
+  sign matches the rest of the sequence — a real turn does not reverse. Every other pair is placed
+  by even spacing: across the arc you state (`?sweep=270`, or the field beside the upload), else
+  assuming a full 360° turn. The map's note and `yaw_source` say, per pair, which rule placed it.
+
+  **On the venue fixtures that is 0 of 8 pairs measured.** Plain walls and small tilt changes put
+  both estimators at the noise floor (NCC 0.07–0.46, signs flipping pair to pair, 0–27° where ~34°
+  was expected). An earlier version reported "2 of 8 from overlap"; those were noise agreeing with
+  noise. A cleverer matcher would produce confident garbage — the stricter gate is the honest fix,
+  and stating the arc you turned is what actually makes the fused map trustworthy.
 - **A panorama** — a single wide image (aspect > 2.5) goes to the panorama path. It is treated as a
   cylindrical projection: each column is a bearing, each row an elevation.
 

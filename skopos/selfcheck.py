@@ -261,6 +261,13 @@ def check_sweep_fusion() -> None:
     assert m.occupancy.shape == (n, n)
     assert (m.occupancy == 1).sum() > 20 and (m.occupancy == 0).sum() > 100
     assert "fused" in m.note and "even spacing" in m.note
+    # A stated arc spaces N photos across it: 3 photos over 180 deg -> 0, 90, 180.
+    m2 = fuse_sweep(imgs, total_sweep_deg=180)
+    assert m2.yaws == [0.0, 90.0, 180.0] or all(u.startswith("even") for u in m2.used) and m2.yaws[-1] == 180.0, m2.yaws
+    assert m2.sweep_deg == 180.0 and "stated 180" in m2.note
+    # The gate must not manufacture confidence: on the venue fixtures both
+    # estimators sit at the noise floor, so at most a rare pair may pass.
+    assert sum(1 for u in m.used if u == "overlap") <= 1, m.used
     assert len(m.to_dict()["points"]) <= 8000
     print(f"  sweep fusion       OK  3 photos, yaws {m.yaws}, {m.n_points:,} pts, "
           f"{sum(1 for u in m.used if u == 'overlap')}/{len(m.used)} pairs from overlap")

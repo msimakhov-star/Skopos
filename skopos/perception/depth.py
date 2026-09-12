@@ -79,6 +79,7 @@ class SpatialMap:
     confs: list | None = None
     used: list | None = None
     centred: bool = False
+    sweep_deg: float | None = None
     pano_fov_deg: float | None = None   # set only by build_pano_map
 
     def to_dict(self, max_points: int = 8000) -> dict:
@@ -96,6 +97,8 @@ class SpatialMap:
             "note": self.note,
             "centred": bool(self.centred),
             "yaws": self.yaws,
+            "yaw_source": self.used,
+            "sweep_deg": self.sweep_deg,
             "pano_fov_deg": self.pano_fov_deg,
         }
 
@@ -166,51 +169,90 @@ def build_map(img_rgb: np.ndarray) -> SpatialMap:
 # Multi-photo fusion — a rotating sweep from ONE spot
 # ---------------------------------------------------------------------------
 
-def _yaw_between(a: np.ndarray, b: np.ndarray, fx: float) -> tuple[float, float]:
-    """How far the camera turned between photo a and photo b, in degrees, from
-    the horizontal shift that best aligns them (phase correlation on a
-    downscaled grey strip). Returns (yaw_deg, confidence 0..1). Pure rotation
-    about the vertical axis is assumed; a step sideways will read as a turn."""
+def _strip(x: np.ndarray) -> np.ndarray:
     from PIL import Image
-    def strip(x):
-        g = np.asarray(Image.fromarray(x).convert("L").resize((256, 192)), np.float32)
-        g = g[48:144]                                   # middle band: least floor/ceiling
-        g -= g.mean(); g /= (g.std() + 1e-6)
-        return g
-    A, B = strip(a), strip(b)
-    # 1-D correlation along x on the column-averaged profile + 2-D check
-    FA, FB = np.fft.fft2(A), np.fft.fft2(B)
-    R = FA * np.conj(FB); R /= (np.abs(R) + 1e-9)
+    g = np.asarray(Image.fromarray(x).convert("L").resize((256, 192)), np.float32)[48:144]
+    g -= g.mean(); g /= (g.std() + 1e-6)
+    return g
+
+
+def _yaw_phase(A: np.ndarray, B: np.ndarray, px_scale: float, fx: float) -> tuple[float, float]:
+    """Phase correlation. Returns (yaw_deg, peak sharpness 0..1)."""
+    R = np.fft.fft2(A) * np.conj(np.fft.fft2(B)); R /= (np.abs(R) + 1e-9)
     corr = np.fft.ifft2(R).real
     peak = np.unravel_index(np.argmax(corr), corr.shape)
     dx = peak[1] if peak[1] <= 128 else peak[1] - 256
-    conf = float((corr.max() - corr.mean()) / (corr.std() + 1e-9)) / 12.0   # ~1 at a clean peak
-    # pixels at 256-wide -> pixels at the image's own width -> degrees
-    scale = a.shape[1] / 256.0
-    yaw = float(np.degrees(np.arctan((dx * scale) / fx)))
-    return yaw, min(max(conf, 0.0), 1.0)
+    conf = float((corr.max() - corr.mean()) / (corr.std() + 1e-9)) / 12.0
+    return float(np.degrees(np.arctan((dx * px_scale) / fx))), min(max(conf, 0.0), 1.0)
 
 
-def fuse_sweep(images: list[np.ndarray], hfov_deg: float = HFOV_DEG) -> SpatialMap:
-    """Fuse a rotating sweep of photos into one 360-ish map, camera at centre.
+def _yaw_ncc(A: np.ndarray, B: np.ndarray, px_scale: float, fx: float) -> tuple[float, float]:
+    """Brute-force normalised cross-correlation over horizontal shifts. Returns
+    (yaw_deg, best NCC -1..1). Independent of the FFT estimator on purpose."""
+    best, bd = -2.0, 0
+    for dx in range(-120, 121):
+        x, y = (A[:, dx:], B[:, :256 - dx]) if dx >= 0 else (A[:, :256 + dx], B[:, -dx:])
+        if x.shape[1] < 40:
+            continue
+        c = float((x * y).mean())
+        if c > best:
+            best, bd = c, dx
+    return float(np.degrees(np.arctan((bd * px_scale) / fx))), best
 
-    Yaw between consecutive photos is estimated from image overlap; when the
-    estimate is unconfident (little or no overlap) the photo is placed by
-    even spacing, 360/N. Both cases are recorded in the note so a bad seam is
-    reported, never smoothed over.
+
+NCC_MIN = 0.40          # below this the "match" is texture noise (measured 0.07-0.46 on plain walls)
+AGREE_DEG = 8.0         # the two estimators must land within this of each other
+
+
+def _yaw_between(a: np.ndarray, b: np.ndarray, fx: float) -> dict:
+    """How far the camera turned between two photos, and whether that number
+    deserves to be believed. Two independent estimators must agree in sign and
+    within AGREE_DEG, and the NCC must clear NCC_MIN; otherwise the pair is
+    reported as unmeasurable and the caller falls back to even spacing.
+
+    Measured on the venue fixtures (plain walls, small tilt changes): the two
+    estimators disagreed on 6 of 8 pairs and the two agreements had NCC 0.19
+    and 0.07 — noise agreeing with noise. A cleverer matcher here would only
+    produce confident garbage; a stricter gate is the honest fix."""
+    A, B = _strip(a), _strip(b)
+    px_scale = a.shape[1] / 256.0
+    y1, c1 = _yaw_phase(A, B, px_scale, fx)
+    y2, c2 = _yaw_ncc(A, B, px_scale, fx)
+    ok = (np.sign(y1) == np.sign(y2)) and abs(y1 - y2) <= AGREE_DEG and c2 >= NCC_MIN and abs(y2) > 3.0
+    return {"yaw": y2 if ok else None, "phase": round(y1, 1), "ncc": round(y2, 1),
+            "phase_conf": round(c1, 2), "ncc_score": round(c2, 2), "accepted": bool(ok)}
+
+
+def fuse_sweep(images: list[np.ndarray], hfov_deg: float = HFOV_DEG,
+               total_sweep_deg: float | None = None) -> SpatialMap:
+    """Fuse a rotating sweep of photos into one map, camera at the centre.
+
+    Yaw between consecutive photos is used only when two independent estimators
+    agree (see _yaw_between) AND the sign matches the sequence's majority — a
+    real turn does not reverse. Every other pair is placed by even spacing:
+    across `total_sweep_deg` if the user stated the arc they turned, else
+    assuming a full 360 degree turn. Which rule placed each pair is recorded.
     """
     if not images:
         raise ValueError("no images")
     long_side = max(images[0].shape[:2])
     fx = (long_side / 2) / np.tan(np.radians(hfov_deg) / 2)
-    even = 360.0 / len(images)
-    yaws, confs, used = [0.0], [], []
-    for i in range(1, len(images)):
-        y, c = _yaw_between(images[i - 1], images[i], fx)
-        # a turn between overlapping shots must be positive and smaller than the FOV
-        ok = c > 0.35 and 3.0 < abs(y) < hfov_deg
-        step = abs(y) if ok else even
-        yaws.append(yaws[-1] + step); confs.append(round(c, 2)); used.append("overlap" if ok else "even")
+    n = len(images)
+    if total_sweep_deg is not None:
+        total_sweep_deg = max(30.0, min(360.0, float(total_sweep_deg)))
+        even = total_sweep_deg / max(n - 1, 1)
+    else:
+        even = 360.0 / n
+    ests = [_yaw_between(images[i - 1], images[i], fx) for i in range(1, n)]
+    signs = [np.sign(e["yaw"]) for e in ests if e["accepted"]]
+    majority = float(np.sign(sum(signs))) if signs else 0.0
+    yaws, used, confs = [0.0], [], []
+    for e in ests:
+        ok = e["accepted"] and (majority == 0.0 or np.sign(e["yaw"]) == majority)
+        step = abs(e["yaw"]) if ok else even
+        yaws.append(yaws[-1] + step)
+        used.append("overlap" if ok else ("even:stated" if total_sweep_deg is not None else "even:360"))
+        confs.append(e["ncc_score"])
     all_pts, total_ms = [], 0.0
     for img, yaw in zip(images, yaws):
         pts, ms = _points(img); total_ms += ms
@@ -223,12 +265,15 @@ def fuse_sweep(images: list[np.ndarray], hfov_deg: float = HFOV_DEG) -> SpatialM
     inside = (np.abs(pts[:, 0]) < GRID_M / 2) & (np.abs(pts[:, 1]) < GRID_M / 2)
     pts = pts[inside]
     n_over = used.count("overlap")
-    note = (f"{len(images)} photos fused as a rotating sweep from one spot (assumed stationary). "
-            f"Yaw from overlap for {n_over}/{len(used)} pairs, even spacing for the rest. "
+    arc = (f"across a stated {total_sweep_deg:.0f} deg arc" if total_sweep_deg is not None
+           else "assuming a full 360 deg turn")
+    note = (f"{n} photos fused as a rotating sweep from one spot (assumed stationary), {arc}. "
+            f"Yaw measured from overlap for {n_over}/{len(used)} pairs; the rest placed by even spacing. "
             "Monocular depth, 1.4 m camera height. Plausible, not measured.")
     m = SpatialMap(pts, _occupancy(pts, centred=True), CELL_M, GRID_M, CAMERA_HEIGHT_M,
                    total_ms, len(pts), note)
     m.yaws = [round(v, 1) for v in yaws]; m.confs = confs; m.used = used; m.centred = True
+    m.sweep_deg = total_sweep_deg
     return m
 
 
