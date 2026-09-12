@@ -295,7 +295,7 @@ function apply(f){
   // the state word is computed from the smoothed value, so the two must not disagree on screen.
   const sm = (m.placeholder_readiness_smoothed ?? m.placeholder_readiness);
   $("#readiness").textContent = sm.toFixed(1) + " / 100"
-    + (m.placeholder_readiness_smoothed != null ? `  ·  raw ${m.placeholder_readiness.toFixed(0)}` : "");
+    + (m.warming_up ? "  ·  warming up" : (m.placeholder_readiness_smoothed != null ? `  ·  raw ${m.placeholder_readiness.toFixed(0)}` : ""));
   $("#msucc").textContent = (m.placeholder_success_rate*100).toFixed(1) + "%";
   $("#mhaz").textContent  = (m.placeholder_hazard_contact_rate*100).toFixed(1) + "%";
   $("#mcov").textContent  = (m.coverage_confidence*100).toFixed(0) + "%";

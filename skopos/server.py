@@ -147,6 +147,7 @@ class Session:
                 "attempts": report.attempts,
                 "placeholder_readiness": report.placeholder_readiness,
                 "placeholder_readiness_smoothed": report.placeholder_readiness_smoothed,
+                "warming_up": report.warming_up,
                 "placeholder_success_ci": list(report.placeholder_success_ci),
                 "state": report.state,
                 "blame": report.blame,

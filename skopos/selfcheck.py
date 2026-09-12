@@ -98,7 +98,7 @@ def check_readiness_honest() -> None:
     as the clean one; the server therefore scores an autonomous probe instead,
     see check_anti_rigging.) (2) On a fixed room the displayed score never
     moves more than MAX_STEP per attempt. (3) Hysteresis bands."""
-    from .metrics.readiness import MAX_STEP, next_state
+    from .metrics.readiness import MAX_STEP, WARMUP, next_state
 
     def run(g: SceneGraph, arm: str | None, n: int = 300) -> tuple[list[float], object]:
         s, t, b, m = (PerturbationSampler(seed=7), FetchMugTask(seed=7),
@@ -126,8 +126,18 @@ def check_readiness_honest() -> None:
     gap = cr.placeholder_readiness_smoothed - hr.placeholder_readiness_smoothed
     assert gap >= 10.0, f"hazardous room not >= 10 below clean: gap {gap:.1f}"
 
-    jump = max(abs(a - b) for tr in (ct, ht) for a, b in zip(tr, tr[1:]))
+    # Slew limit applies only once smoothing is on (after WARMUP attempts).
+    jump = max(abs(a - b) for tr in (ct, ht) for a, b in zip(tr[WARMUP:], tr[WARMUP + 1:]))
     assert jump <= MAX_STEP + 1e-9, f"smoothed score jumped {jump:.2f} > {MAX_STEP}"
+    # During warm-up the displayed score must BE the raw estimate, flagged as such —
+    # an EMA seeded from attempt #1 showed 65 while the raw read 13.
+    w = Metrics()
+    for _ in range(5):
+        pw = PerturbationSampler(seed=9).sample()
+        w.record(FetchMugTask(seed=9).attempt(clean, "wide_arc"), pw.weight)
+    wr = w.report()
+    assert wr.warming_up and abs(wr.placeholder_readiness_smoothed - wr.placeholder_readiness) < 1e-9, \
+        "warm-up must display the raw score"
 
     lo, hi = cr.placeholder_success_ci
     assert 0.0 <= lo <= cr.placeholder_success_rate <= hi <= 1.0, f"bad CI {lo, hi}"

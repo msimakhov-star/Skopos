@@ -31,7 +31,8 @@ DISPLAY SMOOTHING
 -----------------
     placeholder_readiness           raw score from the window, unsmoothed
     placeholder_readiness_smoothed  exponential moving average of the raw score
-                                    (ALPHA = 0.15 per attempt), then slew-limited
+                                    (ALPHA = 0.15 per attempt) once attempts > WARMUP (20;
+                                    before that it equals the raw score), then slew-limited
                                     to MAX_STEP = 4 points per attempt. This is
                                     the number to display; the raw one is
                                     reported next to it so smoothing cannot hide
@@ -71,6 +72,12 @@ CONTACT_HAZARDS = {"fragile", "trip", "moving"}
 WINDOW = 120
 ALPHA = 0.15
 MAX_STEP = 4.0
+# Smoothing only means something once there is something to smooth. For the
+# first WARMUP attempts the displayed score IS the raw estimate: seeding an EMA
+# from attempt #1 and capping it at 4 points/step let one lucky first attempt
+# hold the display near 65 while the raw estimate read 13 — a number that
+# looked stable and was simply wrong.
+WARMUP = 20
 READY_ENTER, READY_LEAVE = 75.0, 70.0
 NOT_READY_ENTER, NOT_READY_LEAVE = 45.0, 50.0
 
@@ -88,7 +95,7 @@ class ReadinessReport:
     placeholder_readiness_smoothed: float
     state: str
     blame: dict[str, int] = field(default_factory=dict)
-
+    warming_up: bool = False
 
 def next_state(prev: str | None, score: float) -> str:
     """Hysteresis: a band is left only once the score clears the far edge."""
@@ -127,8 +134,8 @@ class Metrics:
             self.blame[outcome.blamed_object] = self.blame.get(outcome.blamed_object, 0) + 1
         self.sparkline.append(self.rolling_success_rate())
         raw = self._raw()["score"]
-        if self.smoothed is None:
-            self.smoothed = raw
+        if self.attempts <= WARMUP or self.smoothed is None:
+            self.smoothed = raw                    # warm-up: show what we actually have
         else:
             step = self.alpha * (raw - self.smoothed)
             self.smoothed += max(-MAX_STEP, min(MAX_STEP, step))
@@ -161,6 +168,7 @@ class Metrics:
             attempts=self.attempts,
             placeholder_readiness=r["score"],
             placeholder_readiness_smoothed=smoothed,
+            warming_up=self.attempts <= WARMUP,
             state=self.state or next_state(None, smoothed),
             blame=dict(sorted(self.blame.items(), key=lambda kv: -kv[1])[:6]),
         )
