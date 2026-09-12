@@ -291,7 +291,11 @@ function apply(f){
   const m = f.metrics;
   $("#state").textContent = m.state;
   $("#state").style.color = m.state==="READY" ? "var(--ok)" : m.state==="MARGINAL" ? "var(--warn)" : "var(--bad)";
-  $("#readiness").textContent = m.placeholder_readiness.toFixed(1) + " / 100";
+  // Display the smoothed score (readiness.py: "this is the number to display"), raw beside it —
+  // the state word is computed from the smoothed value, so the two must not disagree on screen.
+  const sm = (m.placeholder_readiness_smoothed ?? m.placeholder_readiness);
+  $("#readiness").textContent = sm.toFixed(1) + " / 100"
+    + (m.placeholder_readiness_smoothed != null ? `  ·  raw ${m.placeholder_readiness.toFixed(0)}` : "");
   $("#msucc").textContent = (m.placeholder_success_rate*100).toFixed(1) + "%";
   $("#mhaz").textContent  = (m.placeholder_hazard_contact_rate*100).toFixed(1) + "%";
   $("#mcov").textContent  = (m.coverage_confidence*100).toFixed(0) + "%";
