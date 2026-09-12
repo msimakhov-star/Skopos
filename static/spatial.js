@@ -109,9 +109,13 @@
     g.strokeStyle = COL.line; g.lineWidth = 1;
     for (let i = 0; i <= colsN; i += per) { const x = ox + i * cs; g.beginPath(); g.moveTo(x, oy); g.lineTo(x, oy + side); g.stroke(); }
     for (let i = 0; i <= rows; i += per) { const y = oy + side - i * cs; g.beginPath(); g.moveTo(ox, y); g.lineTo(ox + side, y); g.stroke(); }
-    // camera: bottom-centre, looking up the screen
-    g.fillStyle = COL.cam; g.beginPath(); g.arc(ox + side / 2, oy + side, 5, 0, Math.PI * 2); g.fill();
-    g.fillStyle = COL.text; g.textAlign = "center"; g.fillText("camera · forward is up", ox + side / 2, oy + side + 14);
+    // camera: bottom-centre for a single forward view; grid centre for a fused
+    // sweep (data.centred), where the photos surround the spot you stood on.
+    const centred = !!data.centred;
+    const cx = ox + side / 2, cy = centred ? oy + side / 2 : oy + side;
+    g.fillStyle = COL.cam; g.beginPath(); g.arc(cx, cy, 5, 0, Math.PI * 2); g.fill();
+    g.fillStyle = COL.text; g.textAlign = "center";
+    g.fillText(centred ? "camera at centre · first photo faces up" : "camera · forward is up", ox + side / 2, oy + side + 14);
     // legend, top-right, below the header badges
     const lx = W - 118, ly = 64;
     [["free", COL.free], ["occupied", COL.occ], ["unknown", COL.unk]].forEach(([t, c], i) => {

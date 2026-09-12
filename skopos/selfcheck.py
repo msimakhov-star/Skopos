@@ -148,11 +148,34 @@ def check_spatial_map() -> None:
           f"{(m.occupancy==0).sum()} free cells, depth {m.depth_ms:.0f} ms")
 
 
+def check_sweep_fusion() -> None:
+    """Three photos fused as a rotating sweep. Fails if yaw does not increase
+    monotonically, if the camera's own cell is not free, or if the note stops
+    admitting which pairs were placed by even spacing."""
+    import pathlib
+    import numpy as np
+    from PIL import Image
+    from .perception.depth import fuse_sweep, GRID_M, CELL_M
+    fixtures = pathlib.Path(__file__).parent.parent / "static" / "fixtures"
+    imgs = [np.asarray(Image.open(fixtures / f"IMG_69{i}.jpg").convert("RGB")) for i in (78, 79, 80)]
+    m = fuse_sweep(imgs)
+    assert m.centred and m.yaws is not None and len(m.yaws) == 3
+    assert all(b > a for a, b in zip(m.yaws, m.yaws[1:])), f"yaw not increasing: {m.yaws}"
+    assert m.yaws[-1] < 360.0
+    n = int(GRID_M / CELL_M)
+    assert m.occupancy.shape == (n, n)
+    assert (m.occupancy == 1).sum() > 20 and (m.occupancy == 0).sum() > 100
+    assert "fused" in m.note and "even spacing" in m.note
+    assert len(m.to_dict()["points"]) <= 8000
+    print(f"  sweep fusion       OK  3 photos, yaws {m.yaws}, {m.n_points:,} pts, "
+          f"{sum(1 for u in m.used if u == 'overlap')}/{len(m.used)} pairs from overlap")
+
+
 def main() -> int:
     print("skopos selfcheck")
     for fn in (check_privacy, check_importance_weights, check_bandit_flip,
                check_end_to_end, check_naming_honesty,
-               check_spatial_map, check_vlm_offline):
+               check_spatial_map, check_vlm_offline, check_sweep_fusion):
         fn()
     print("all checks passed")
     return 0

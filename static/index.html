@@ -103,6 +103,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     <span style="color:var(--faint)">cause <b id="acause" style="color:var(--ink)">—</b></span>
     <span style="color:var(--faint);margin-left:auto" id="note"></span>
     <label style="font:11px var(--mono);color:var(--mute);cursor:pointer;border:1px solid var(--line);padding:5px 9px;background:var(--sunk)" title="scan a room photo into a scene graph (pixels are discarded server-side)">scan photo<input id="scan" type="file" accept="image/jpeg,image/png" style="display:none"></label>
+    <button id="sweep" style="flex:0 0 auto;padding:5px 9px" title="fuse all nine kitchen photos as a rotating sweep from one spot">fuse 9 photos</button>
     <select id="anchor" style="background:var(--sunk);color:var(--ink);border:1px solid var(--line);font:11px var(--mono);padding:4px" title="anchor photo for the Reactor world"></select>
     <button id="rx-end" style="flex:0 0 auto;padding:5px 9px" title="disconnect the Reactor session (stops billing)">End session</button>
   </div>
@@ -346,6 +347,23 @@ $("#rep").onclick = async () => {
   $("#anchor").innerHTML = FIX.map(n=>`<option value="/static/fixtures/${n}.jpg">${n}</option>`).join("");
   $("#anchor").onchange = e => window.SkoposReactor && window.SkoposReactor.setAnchor(e.target.value);
   $("#rx-end").onclick = () => window.SkoposReactor && window.SkoposReactor.disconnect();
+  $("#sweep").onclick = async e => {
+    e.target.disabled = true; toast("fusing 9 photos — about 4 seconds …");
+    try {
+      const fd = new FormData();
+      for (const n of FIX.filter(n => n !== "IMG_6987")) {           // 6987 is the panorama, not a frame
+        const b = await (await fetch(`/static/fixtures/${n}.jpg`)).blob();
+        fd.append("file", new File([b], n + ".jpg", { type: "image/jpeg" }));
+      }
+      const r = await fetch("/api/scan/sweep", { method: "POST", body: fd });
+      const j = await r.json().catch(() => ({}));
+      if (!r.ok) return toast(`sweep failed: ${j.error || r.status}`);
+      const byOverlap = (j.placed_by || []).filter(x => x === "overlap").length;
+      toast(`fused ${j.photos} photos · ${j.n_points.toLocaleString()} pts · ${byOverlap}/${j.placed_by.length} joins from overlap`);
+      window.dispatchEvent(new Event("skopos:scanned"));
+      if (window.SkoposSpatial) window.SkoposSpatial.setMode("map");
+    } finally { e.target.disabled = false; }
+  };
   $("#scan").onchange = async e => {
     const file = e.target.files && e.target.files[0]; if (!file) return;
     const fd = new FormData(); fd.append("file", file);

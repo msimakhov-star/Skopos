@@ -236,6 +236,58 @@ def _multipart_file(content_type: str, body: bytes) -> bytes | None:
     return None
 
 
+def _multipart_files(content_type: str, body: bytes) -> list[bytes]:
+    """Every 'file' part of a multipart body, in order, parsed in memory."""
+    msg = email.message_from_bytes(b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + body)
+    return [part.get_payload(decode=True) for part in msg.walk()
+            if part.get_param("name", header="content-disposition") == "file"]
+
+
+MAX_SWEEP_BYTES = 40 * 1024 * 1024
+_JPEG, _PNG = b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n"
+
+
+@app.post("/api/scan/sweep")
+async def scan_sweep(request: Request) -> JSONResponse:
+    """Several photos of ONE spot, turning -> one fused 360-ish map.
+
+    Same privacy contract as /api/scan: frames are parsed in memory, fused in a
+    worker thread, and deleted. Only the numbers survive. Does not touch the
+    scene graph — the sweep is geometry, the graph is semantics."""
+    global LATEST_MAP
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_SWEEP_BYTES:
+            return JSONResponse({"error": "sweep larger than 40 MB"}, status_code=413)
+        chunks.append(chunk)
+    frames = _multipart_files(request.headers.get("content-type", ""), b"".join(chunks))
+    del chunks
+    frames = [f for f in frames if f and (f[:3] == _JPEG or f[:8] == _PNG)]
+    if len(frames) < 2:
+        return JSONResponse({"error": "need at least two JPEG/PNG 'file' parts"}, status_code=400)
+    import io as _io
+    import numpy as _np
+    from PIL import Image as _Image
+    from .perception.depth import fuse_sweep
+    imgs = [_np.asarray(_Image.open(_io.BytesIO(f)).convert("RGB")) for f in frames]
+    n_bytes = sum(len(f) for f in frames)
+    del frames
+    try:
+        smap = await asyncio.to_thread(fuse_sweep, imgs)
+    finally:
+        del imgs
+    stamp = int(time.time())
+    LATEST_MAP = smap.to_dict()
+    (RUNS / f"map-{stamp}.json").write_text(json.dumps(LATEST_MAP))
+    log.info("sweep: %d photos, %d bytes -> %d points; yaws %s; %s",
+             len(smap.yaws or []), n_bytes, smap.n_points, smap.yaws, smap.used)
+    return JSONResponse({"photos": len(smap.yaws or []), "n_points": smap.n_points,
+                         "yaws": smap.yaws, "placed_by": smap.used,
+                         "depth_ms": round(smap.depth_ms, 1), "note": smap.note,
+                         "frames_retained": 0, "cached_as": f"map-{stamp}.json"})
+
+
 @app.post("/api/scan")
 async def scan(request: Request) -> JSONResponse:
     global LATEST_SCAN, LATEST_MAP
