@@ -259,6 +259,10 @@ def _multipart_files(content_type: str, body: bytes) -> list[bytes]:
             if part.get_param("name", header="content-disposition") == "file"]
 
 
+class _SkipMap(Exception):
+    pass
+
+
 MAX_SWEEP_BYTES = 40 * 1024 * 1024
 _JPEG, _PNG = b"\xff\xd8\xff", b"\x89PNG\r\n\x1a\n"
 PANO_ASPECT = 2.5          # one image wider than this is a panorama, not a sweep
@@ -380,7 +384,7 @@ async def scan_sweep(request: Request, fov: float | None = None, sweep: float | 
 
 
 @app.post("/api/scan")
-async def scan(request: Request) -> JSONResponse:
+async def scan(request: Request, map: int = 1) -> JSONResponse:
     global LATEST_SCAN, LATEST_MAP
     chunks, size = [], 0
     async for chunk in request.stream():
@@ -402,7 +406,12 @@ async def scan(request: Request) -> JSONResponse:
     result = await asyncio.to_thread(perception.analyse, [frame], room_id=f"scan-{stamp}")
     # Spatial map from the SAME frame while we still hold it: depth -> points ->
     # occupancy, in a worker thread. Same privacy contract — only numbers survive.
+    # ?map=0 skips it — the multi-upload calls this for the scene graph and then
+    # /sweep for the map; building a map here just to overwrite it cost a full
+    # depth pass per upload.
     try:
+        if not map:
+            raise _SkipMap()
         from .perception.depth import build_map
         import io as _io
         import numpy as _np
@@ -413,6 +422,8 @@ async def scan(request: Request) -> JSONResponse:
         LATEST_MAP = smap.to_dict()
         (RUNS / f"map-{stamp}.json").write_text(json.dumps(LATEST_MAP))
         log.info("spatial map: %d points, depth %.0f ms", smap.n_points, smap.depth_ms)
+    except _SkipMap:
+        pass                                       # keep whatever map is current
     except Exception as exc:  # additive: a scan without a map is still a scan
         log.warning("spatial map failed: %s", exc)
         LATEST_MAP = None

@@ -364,6 +364,19 @@ async function setAnchor(url) {
 }
 
 bindKeys();
+
+// The <video> keeps decoding 48fps even when the cloud/map canvas covers it.
+// Pause the element (not the session) whenever it is not visible; play on return.
+(function watchVisibility() {
+  const v = $("#video"); if (!v) return;
+  const sync = () => {
+    const shown = getComputedStyle(v).display !== "none" && !(v.nextElementSibling && v.nextElementSibling.id === "spatial" && getComputedStyle(v.nextElementSibling).display !== "none");
+    if (shown) { if (v.paused && v.srcObject && !state.paused) v.play().catch(() => {}); }
+    else if (!v.paused) v.pause();
+  };
+  new MutationObserver(sync).observe(v.parentNode, { attributes: true, subtree: true, attributeFilter: ["style", "class"] });
+  document.addEventListener("visibilitychange", () => { if (document.hidden) { if (!v.paused) v.pause(); } else sync(); });
+})();
 addEventListener("beforeunload", () => { if (state.model) state.model.disconnect(); });
 { const b = $("#rx-apply"); if (b) b.onclick = () => applyScene(); }
 

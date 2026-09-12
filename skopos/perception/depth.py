@@ -53,12 +53,21 @@ def _sess():
     return _session
 
 
-def predict_depth(img_rgb: np.ndarray, size: int = 518) -> np.ndarray:
+# Inference input size (short side). Measured on an M-series CPU, IMG_6978:
+#   518 -> 985 ms (429 obstacle cells) | 392 -> 380 ms (348) | 308 -> 227 ms (328)
+# 392 keeps most of the structure at 2.6x the speed; 518 is one env var away.
+DEPTH_SIZE = int(os.environ.get("SKOPOS_DEPTH_SIZE", "392"))
+DEPTH_MAX_LONG = 1400   # a 4:1 panorama at short-side 392 would be 1568 wide; cap it
+
+
+def predict_depth(img_rgb: np.ndarray, size: int | None = None) -> np.ndarray:
     """img_rgb uint8 (H, W, 3) -> relative inverse depth float32 (h, w), larger = closer."""
     from PIL import Image
     h, w = img_rgb.shape[:2]
+    size = size or DEPTH_SIZE
     s = size / min(w, h)
-    nw, nh = int(round(w * s / 14)) * 14, int(round(h * s / 14)) * 14
+    s = min(s, DEPTH_MAX_LONG / max(w, h))            # long-side cap (panoramas)
+    nw, nh = max(14, int(round(w * s / 14)) * 14), max(14, int(round(h * s / 14)) * 14)
     r = np.asarray(Image.fromarray(img_rgb).resize((nw, nh), Image.BICUBIC), np.float32) / 255.0
     x = ((r - MEAN) / STD).transpose(2, 0, 1)[None]
     d = _sess().run(None, {"pixel_values": x})[0][0]
@@ -82,7 +91,7 @@ class SpatialMap:
     sweep_deg: float | None = None
     pano_fov_deg: float | None = None   # set only by build_pano_map
 
-    def to_dict(self, max_points: int = 8000) -> dict:
+    def to_dict(self, max_points: int = 6000) -> dict:
         pts = self.points
         if len(pts) > max_points:                       # subsample for the wire
             idx = np.random.default_rng(0).choice(len(pts), max_points, replace=False)

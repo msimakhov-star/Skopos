@@ -300,8 +300,10 @@ function apply(f){
   $("#mhaz").textContent  = (m.placeholder_hazard_contact_rate*100).toFixed(1) + "%";
   $("#mcov").textContent  = (m.coverage_confidence*100).toFixed(0) + "%";
   $("#matt").textContent  = m.attempts;
-  $("#blame").innerHTML = Object.entries(m.blame||{}).map(([k,v])=>
-    `<div class="mrow"><span>${k}</span><b>${v}</b></div>`).join("") || "<span>none yet</span>";
+  { const bl = JSON.stringify(m.blame||{});
+    if (bl !== apply._lastBlame) { apply._lastBlame = bl;
+      $("#blame").innerHTML = Object.entries(m.blame||{}).map(([k,v])=>
+        `<div class="mrow"><span>${k}</span><b>${v}</b></div>`).join("") || "<span>none yet</span>"; } }
   drawSpark(m.rolling||[]);
 
   $("#fp").textContent = f.privacy.frames_processed;
@@ -312,7 +314,8 @@ function apply(f){
   $("#px-render").textContent = fmtBytes(rendererBytes);
   $("#px-render").className = rendererBytes===0 ? "zero" : "";
   // Exactly the bytes that cross the boundary — judges can read it.
-  $("#payload").textContent = JSON.stringify(f.scene_graph, null, 1);
+  { const sgs = JSON.stringify(f.scene_graph, null, 1);
+    if (sgs !== apply._lastSg) { apply._lastSg = sgs; $("#payload").textContent = sgs; } }
 }
 
 /* ---------- transport ---------- */
@@ -394,7 +397,7 @@ $("#rep").onclick = async () => {
       if (files.length >= 2) {
         toast(`fusing ${files.length} photos …`);
         // scene graph first: /api/scan also stores a single-frame map, and the fused sweep map must be the one left behind
-        const sg = await post("/api/scan", [files[0]]);                  // scene graph from the first frame
+        const sg = await post("/api/scan?map=0", [files[0]]);                  // scene graph from the first frame
         const sw = await post("/api/scan/sweep", files);                 // geometry only; overwrites the map
         const byOverlap = (sw.placed_by || []).filter(x => x === "overlap").length;
         summary = `fused ${sw.photos} photos · ${byOverlap}/${(sw.placed_by || []).length} joins from overlap · scene graph: ${sg.scene.objects.length} objects via ${sg.source}`;
