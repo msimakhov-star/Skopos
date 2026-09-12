@@ -28,18 +28,32 @@ def _rotate(pts: np.ndarray, yaw_deg: float) -> np.ndarray:
     return out
 
 
+MIN_OVERLAP = 0.15   # a candidate must overlap the map on >= this share of its own known cells
+
+
 def _score(existing: np.ndarray, cand: np.ndarray) -> float:
-    """Agreement between two centred grids where both have an opinion:
-    +1 per cell both call occupied, +0.25 per cell both call free, -1 per
-    cell one calls occupied and the other free. Unknown cells abstain."""
-    known = (existing != 2) & (cand != 2)
-    if known.sum() == 0:
+    """Agreement between two centred grids: +1 per cell both call occupied,
+    +0.25 per cell both call free, -1 per cell one calls occupied and the
+    other free. Unknown cells abstain.
+
+    Normalised by the CANDIDATE's own known cells, not by the overlap. The
+    earlier version divided by the overlap, so a yaw where the rotated view
+    barely touched the map could score 1.00 on two agreeing cells and beat
+    the true fit — a self-append on a 3-photo sweep came back at 138 deg with
+    agreement 1.00. A candidate that overlaps less than MIN_OVERLAP of itself
+    is not a fit at all and scores -1."""
+    cand_known = (cand != 2)
+    n_cand = int(cand_known.sum())
+    if n_cand == 0:
+        return -1.0
+    known = (existing != 2) & cand_known
+    if known.sum() < MIN_OVERLAP * n_cand:
         return -1.0
     e, c = existing[known], cand[known]
     both_occ = ((e == 1) & (c == 1)).sum()
     both_free = ((e == 0) & (c == 0)).sum()
     conflict = ((e == 1) & (c == 0)).sum() + ((e == 0) & (c == 1)).sum()
-    return float(both_occ + 0.25 * both_free - conflict) / float(known.sum())
+    return float(both_occ + 0.25 * both_free - conflict) / float(n_cand)
 
 
 def register_yaw(existing_occ: np.ndarray, new_pts: np.ndarray) -> tuple[float, float, np.ndarray]:
@@ -57,6 +71,8 @@ def register_yaw(existing_occ: np.ndarray, new_pts: np.ndarray) -> tuple[float, 
         s = _score(existing_occ, occ)
         if s > best[1]:
             best = (float(yaw % 360.0), s, occ)
+    if best[2] is None or best[1] <= -1.0:
+        raise ValueError("no yaw overlaps the existing map enough to register this view")
     return best
 
 
@@ -96,7 +112,7 @@ def append_view(existing: dict, new_map: SpatialMap) -> dict:
     pts = new_map.points
     if not new_map.centred:                      # a forward-only frame: put its camera at the origin
         pts = pts.copy(); pts[:, 1] -= 0.0       # already camera-at-origin in _points; nothing to shift
-    yaw, score, occ_new = register_yaw(occ_prev, pts)
+    yaw, score, occ_new = register_yaw(occ_prev, pts)   # raises ValueError when nothing fits
     merged = merge(occ_prev, occ_new)
     # merge point clouds for the viewer: keep the old subsample, add the new one rotated
     old_pts = np.asarray(existing.get("points", []), np.float32).reshape(-1, 6)

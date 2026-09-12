@@ -334,13 +334,39 @@ def check_route_planning() -> None:
           f"unknown crossed {r3.cells_unknown}")
 
 
+def check_incremental_append() -> None:
+    """Adding a photo INTO an existing map. The ground-truth case: appending
+    the sweep's own first frame must register at ~0 deg. Before the score was
+    normalised by the candidate it came back at 138 deg with agreement 1.00."""
+    import pathlib
+    import numpy as np
+    from PIL import Image
+    from .perception.depth import fuse_sweep, build_map
+    from .perception.incremental import append_view
+    fx = pathlib.Path(__file__).parent.parent / "static" / "fixtures"
+    imgs = [np.asarray(Image.open(fx / f"IMG_69{i}.jpg").convert("RGB")) for i in (78, 79, 80)]
+    base = fuse_sweep(imgs, total_sweep_deg=90).to_dict()
+    out = append_view(base, build_map(imgs[0]))
+    yaw = out["last_register"]["yaw_deg"]
+    assert min(yaw, 360 - yaw) <= 5.0, f"self-append registered at {yaw} deg, expected ~0"
+    assert out["last_register"]["score"] < 1.0
+    assert out["views"] == 2 and out["centred"]
+    # The common case: a single photo, then another. Promoted, then registered.
+    single = build_map(imgs[0]).to_dict()
+    out2 = append_view(single, build_map(imgs[1]))
+    assert out2["last_register"]["promoted_single_view"] and out2["centred"]
+    assert out2["last_register"]["cells_known_after"] >= out2["last_register"]["cells_known_before"]
+    print(f"  incremental append OK  self-append yaw {yaw} deg (score {out['last_register']['score']}), "
+          f"single->append promoted, known {out2['last_register']['cells_known_before']}->{out2['last_register']['cells_known_after']}")
+
+
 def main() -> int:
     print("skopos selfcheck")
     for fn in (check_privacy, check_importance_weights, check_bandit_flip,
                check_end_to_end, check_readiness_honest, check_anti_rigging,
                check_naming_honesty,
                check_spatial_map, check_vlm_offline, check_sweep_fusion,
-               check_panorama, check_route_planning):
+               check_panorama, check_route_planning, check_incremental_append):
         fn()
     print("all checks passed")
     return 0
