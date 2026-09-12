@@ -350,13 +350,23 @@ def check_incremental_append() -> None:
     yaw = out["last_register"]["yaw_deg"]
     assert min(yaw, 360 - yaw) <= 5.0, f"self-append registered at {yaw} deg, expected ~0"
     assert out["last_register"]["score"] < 1.0
+    # Dense map too: all nine photos, with and without a stated arc. A scorer
+    # that rewards both-free cells too much drops the frame onto the big free
+    # floor at the wrong angle once the map is dense (a rewrite that did
+    # exactly that came back at 171 deg here).
+    dense = [np.asarray(Image.open(fx / f"IMG_69{i}.jpg").convert("RGB")) for i in range(78, 87)]
+    f0 = build_map(dense[0])
+    for label, m in (("dense/360", fuse_sweep(dense).to_dict()),
+                     ("dense/270", fuse_sweep(dense, total_sweep_deg=270).to_dict())):
+        y = append_view(m, f0)["last_register"]["yaw_deg"]
+        assert min(y, 360 - y) <= 5.0, f"{label} self-append registered at {y} deg, expected ~0"
     assert out["views"] == 2 and out["centred"]
     # The common case: a single photo, then another. Promoted, then registered.
     single = build_map(imgs[0]).to_dict()
     out2 = append_view(single, build_map(imgs[1]))
     assert out2["last_register"]["promoted_single_view"] and out2["centred"]
     assert out2["last_register"]["cells_known_after"] >= out2["last_register"]["cells_known_before"]
-    print(f"  incremental append OK  self-append yaw {yaw} deg (score {out['last_register']['score']}), "
+    print(f"  incremental append OK  self-append yaw {yaw} deg sparse, ~0 dense x2 (score {out['last_register']['score']}), "
           f"single->append promoted, known {out2['last_register']['cells_known_before']}->{out2['last_register']['cells_known_after']}")
 
 
