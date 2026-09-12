@@ -385,6 +385,8 @@ $("#rep").onclick = async () => {
     return j;
   };
   $("#scan").onchange = async e => {
+    // The user's own photo is also the Reactor anchor from now on (fixtures stay in the dropdown).
+    if (e.target.files && e.target.files[0] && window.SkoposReactor) window.SkoposReactor.setAnchorFile(e.target.files[0]);
     const files = Array.from(e.target.files || []); if (!files.length) return;
     e.target.value = "";
     try {

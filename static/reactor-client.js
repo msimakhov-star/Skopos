@@ -48,6 +48,11 @@ const state = {
   pendingCount: 0,       // prompt changes absorbed since the last send
   started: false,
   idleKillSeconds: 90,
+  holdTimer: null,
+  paused: false,
+  resumeOnInput: false,
+  closedByUser: false,
+  anchorFile: null,
   idleTimer: null,
   idleDeadline: 0,
   countdownTimer: null,
@@ -59,20 +64,70 @@ const note = (t) => { const n = $("#note"); if (n) n.textContent = t; };
 const badge = (t) => { const b = $("#rx-status"); if (b) b.textContent = t; };
 
 // ---------------------------------------------------------------- idle kill
+const HOLD_AFTER_MS = 5000;   // no input for 5s -> pause generation; the picture holds
+
+/* The last decoded frame, painted over the video so the room STAYS on screen
+ * when the session is paused or closed. Created once, from JS. */
+function freezeCanvas() {
+  let c = $("#freeze");
+  if (c) return c;
+  const v = $("#video");
+  c = document.createElement("canvas"); c.id = "freeze";
+  c.style.cssText = "position:absolute;inset:0;width:100%;height:100%;display:none;object-fit:cover";
+  v.parentNode.insertBefore(c, v.nextSibling);
+  return c;
+}
+function captureFrame() {
+  const v = $("#video"); if (!v || !v.videoWidth) return false;
+  const c = freezeCanvas();
+  c.width = v.videoWidth; c.height = v.videoHeight;
+  c.getContext("2d").drawImage(v, 0, 0);
+  c.style.display = "block";
+  return true;
+}
+function showLive() { const c = $("#freeze"); if (c) c.style.display = "none"; }
+
+async function holdStill() {
+  // Short idle: stop the model advancing so the room does not drift while nobody
+  // is driving. Billing continues (the GPU is still reserved) — that is what the
+  // 90s close below is for.
+  if (!state.model || !state.started || state.paused) return;
+  try { await idleAll(); await state.model.pause(); state.paused = true; captureFrame(); note("world holding — press any key to move"); }
+  catch (e) { console.warn("pause failed", e); }
+}
+async function resumeMoving() {
+  if (!state.model || !state.paused) return;
+  try { await state.model.resume(); state.paused = false; showLive(); note("streaming — " + state.anchorName); }
+  catch (e) { console.warn("resume failed", e); }
+}
+
 function armIdleKill(seconds) {
   clearTimeout(state.idleTimer);
+  clearTimeout(state.holdTimer);
   clearInterval(state.countdownTimer);
   state.idleDeadline = Date.now() + seconds * 1000;
+  state.holdTimer = setTimeout(holdStill, HOLD_AFTER_MS);
   state.idleTimer = setTimeout(() => {
-    note("idle " + seconds + "s — session closed to stop billing");
-    disconnect();
+    // Long idle: keep the last frame on screen, close the session (stops the
+    // meter). The next input reconnects on the same anchor, prompt and seed.
+    captureFrame();
+    note("idle " + seconds + "s — session closed, picture kept; press any key to reconnect");
+    state.resumeOnInput = true;
+    disconnect({ keepPicture: true });
   }, seconds * 1000);
   state.countdownTimer = setInterval(() => {
     const left = Math.max(0, Math.ceil((state.idleDeadline - Date.now()) / 1000));
     const el = $("#rx-idle"); if (el) el.textContent = left + "s";
   }, 500);
 }
-const touch = () => { if (state.model && state.status === "ready") armIdleKill(state.idleKillSeconds); };
+const touch = () => {
+  if (state.model && state.status === "ready") { armIdleKill(state.idleKillSeconds); if (state.paused) resumeMoving(); return; }
+  if ((state.resumeOnInput || state.closedByUser) && !state.model && state.lastDetail) {
+    state.resumeOnInput = false; state.closedByUser = false;
+    note("reconnecting on the same anchor …");
+    startWith(state.lastDetail, state.anchorUrl).catch((e) => note("reconnect failed: " + (e.message || e)));
+  }
+};
 
 // ---------------------------------------------------------------- lifecycle
 async function loadSdk() {
@@ -98,6 +153,8 @@ async function connect(detail) {
   });
   m.on("trackReceived", (name, track, stream) => {
     if (name !== "main_video") return;
+    const v = $("#video");
+    v.addEventListener("playing", showLive, { once: true });
     video.srcObject = stream || new MediaStream([track]);
     video.play().catch(() => {});
   });
@@ -113,11 +170,15 @@ async function connect(detail) {
 }
 
 async function stageAnchor(m, detail, anchorUrl) {
-  // Fetch the fixture as a Blob and upload it. This is the ONE place image
-  // bytes leave the device for the renderer, and it is counted on screen.
-  const r = await fetch(anchorUrl);
-  const blob = await r.blob();
-  const file = new File([blob], anchorUrl.split("/").pop(), { type: blob.type || "image/jpeg" });
+  // The anchor is either a photo the user uploaded (state.anchorFile) or a
+  // fixture URL. Either way this is the ONE place image bytes leave the device
+  // for the renderer, and it is counted on screen.
+  let file = state.anchorFile;
+  if (!file) {
+    const r = await fetch(anchorUrl);
+    const blob = await r.blob();
+    file = new File([blob], anchorUrl.split("/").pop(), { type: blob.type || "image/jpeg" });
+  }
   const ref = await m.uploadFile(file);
   if (typeof window.rendererBytes === "number") window.rendererBytes += file.size;
   await m.setImage({ image: ref });
@@ -146,7 +207,12 @@ async function startWith(detail, anchorUrl) {
   showWorld();
 }
 
-async function disconnect() {
+async function disconnect(opts) {
+  const keep = !!(opts && opts.keepPicture);
+  state.closedByUser = true;
+  clearTimeout(state.holdTimer);
+  if (!keep) showLive();
+  state.paused = false;
   const m = state.model; if (!m) return;
   try { await idleAll(); } catch (_) {}
   try { await m.disconnect(); } catch (_) {}
@@ -183,7 +249,10 @@ const SEND = {
 function bindKeys() {
   const isTyping = (e) => ["INPUT", "TEXTAREA"].includes((e.target && e.target.tagName) || "");
   addEventListener("keydown", (e) => {
-    if (isTyping(e) || !KEYS[e.code] || !state.model || !state.started) return;
+    if (isTyping(e)) return;
+    if (!state.model && (state.resumeOnInput || state.closedByUser) && KEYS[e.code]) { touch(); return; }
+    if (!KEYS[e.code] || !state.model || !state.started) return;
+    if (state.paused) resumeMoving();
     const [axis, val] = KEYS[e.code];
     if (state.held[axis] === val) return;          // key repeat
     state.held[axis] = val; touch();
@@ -259,6 +328,12 @@ function setLocked(v) {
 async function ensure(render) {
   const d = render.detail || {};
   if (!d.jwt) { note("reactor: no jwt in render.detail"); return; }
+  // After a close (End session, or the idle close) do NOT reopen on the next
+  // frame. Before this guard every disconnect was undone 0.55s later, so
+  // "End session" never ended anything and the idle close became an endless
+  // loop of fresh, billed sessions. Only a keypress/pointer or a new anchor
+  // reconnects.
+  if (!state.model && state.closedByUser) return;
   if (!state.model) {
     if (state.retryAt && Date.now() < state.retryAt) return;       // back off after a failure
     try { await startWith({ ...d, prompt: render.prompt }, state.anchorUrl); }
@@ -282,7 +357,7 @@ async function ensure(render) {
 }
 
 async function setAnchor(url) {
-  state.anchorUrl = url;
+  state.anchorUrl = url; state.anchorFile = null; state.closedByUser = false;
   if (state.model && state.started) {
     const d = state.lastDetail; if (d) await startWith(d, url);
   }
@@ -294,7 +369,10 @@ addEventListener("beforeunload", () => { if (state.model) state.model.disconnect
 
 window.SkoposReactor = {
   ensure: (render) => { state.lastDetail = { ...(render.detail || {}), prompt: render.prompt }; return ensure(render); },
-  disconnect, setAnchor, idleAll, applyScene, setLocked,
+  disconnect, setAnchor, idleAll, applyScene, setLocked, holdStill, resumeMoving,
+  /* Use one of the user's own photos as the Reactor anchor. Restarts the world if streaming. */
+  setAnchorFile: async (file) => { state.anchorFile = file || null; state.anchorUrl = null; state.closedByUser = false;
+    if (state.model && state.started && state.lastDetail) await startWith(state.lastDetail, null); },
   get status() { return state.status; },
   get started() { return state.started; },
   get anchor() { return state.anchorName; },
