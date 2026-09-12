@@ -69,13 +69,30 @@ def merge(existing: np.ndarray, incoming: np.ndarray) -> np.ndarray:
     return out
 
 
+def promote_to_centred(occ: np.ndarray) -> np.ndarray:
+    """A single forward view keeps the camera at row 0 (bottom-centre) with
+    6 m ahead. The centred frame keeps the camera at row n//2 with 3 m each
+    way. Shift the rows: rows 0..n//2-1 (0-3 m ahead) move up to n//2..n-1;
+    the far 3-6 m fall off (they were mostly unknown); the half behind the
+    camera becomes unknown, because nobody has looked there yet. Points need
+    no shift — they are camera-at-origin in both frames."""
+    n = occ.shape[0]; h = n // 2
+    out = np.full_like(occ, 2)
+    out[h:, :] = occ[:n - h, :]
+    return out
+
+
 def append_view(existing: dict, new_map: SpatialMap) -> dict:
-    """existing: the dict a previous scan produced (must be centred).
-    new_map: a SpatialMap for the new photo, camera-centred (pano or a single
-    frame re-centred). Returns a new map dict plus registration details."""
-    if not existing.get("centred"):
-        raise ValueError("can only append to a centred (sweep or panorama) map")
+    """existing: the dict a previous scan produced. A single forward view is
+    promoted to the centred frame first (see promote_to_centred), so the
+    common case — scan one photo, then add another — just works.
+    new_map: a SpatialMap for the new photo, camera at the origin.
+    Returns a new map dict plus registration details."""
     occ_prev = np.asarray(existing["occupancy"], np.uint8)
+    promoted = False
+    if not existing.get("centred"):
+        occ_prev = promote_to_centred(occ_prev)
+        promoted = True
     pts = new_map.points
     if not new_map.centred:                      # a forward-only frame: put its camera at the origin
         pts = pts.copy(); pts[:, 1] -= 0.0       # already camera-at-origin in _points; nothing to shift
@@ -100,8 +117,9 @@ def append_view(existing: dict, new_map: SpatialMap) -> dict:
         "views": int(existing.get("views", 1)) + 1,
         "last_register": {"yaw_deg": round(yaw, 1), "score": round(score, 3),
                           "cells_known_before": known_before, "cells_known_after": known_after,
-                          "grid_cells": n * n},
+                          "grid_cells": n * n, "promoted_single_view": promoted},
         "note": (existing.get("note", "") +
+                 (" Single view promoted to the centred frame (far half dropped, rear half unknown)." if promoted else "") +
                  f" +1 view registered by yaw search (yaw {yaw:.0f}°, agreement {score:.2f}); "
                  "rotation-only, plausible not measured."),
     })

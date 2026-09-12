@@ -409,8 +409,6 @@ async def scan_append(request: Request, fov: float | None = None) -> JSONRespons
         if not maps:
             return JSONResponse({"error": "no existing map to append to — scan or fuse first"}, status_code=409)
         LATEST_MAP = json.loads(maps[-1].read_text())
-    if not LATEST_MAP.get("centred"):
-        return JSONResponse({"error": "existing map is a single forward view; fuse or scan a panorama first"}, status_code=409)
     chunks, size = [], 0
     async for chunk in request.stream():
         size += len(chunk)

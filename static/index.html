@@ -392,8 +392,7 @@ $("#rep").onclick = async () => {
     // "add to scan": a new photo of the same room joins the existing map; the Reactor world keeps its anchor.
     if (e.target.files && e.target.files.length === 1 && $("#append") && $("#append").checked) {
       const st = await fetch("/api/scan/status").then(r => r.json()).catch(() => ({}));
-      const haveMap = !!(st.has_map && st.centred);
-      if (st.has_map && !st.centred) toast("existing map is a single view — fuse or scan a panorama first, then add photos");
+      const haveMap = !!st.has_map;
       if (haveMap) {
         const fd = new FormData(); fd.append("file", e.target.files[0]);
         toast("registering into the existing scan …");
