@@ -100,6 +100,7 @@ class Session:
         self.bandit = LinUCB(SceneGraph.CONTEXT_DIM)
         self.probe = LinUCB(SceneGraph.CONTEXT_DIM, arms=AUTONOMOUS)   # feeds readiness
         self.metrics = Metrics()
+        self.metrics_autonomous = Metrics()
         self.current: SceneGraph = self.base
         self.paused = False
         self.history: list[dict] = []
@@ -122,6 +123,10 @@ class Session:
             outcome = self.task.attempt(self.current, arm)
             self.bandit.update(arm, ctx, outcome.reward)
             self.metrics.record(outcome, p.weight)
+            probe_arm = self.probe.select(ctx)
+            probe = self.task.attempt(self.current, probe_arm)
+            self.probe.update(probe_arm, ctx, probe.reward)
+            self.metrics_autonomous.record(probe, p.weight)
 
     def step(self) -> dict:
         p = self.sampler.sample()
@@ -130,11 +135,15 @@ class Session:
         arm = self.bandit.select(ctx)
         outcome = self.task.attempt(self.current, arm)
         self.bandit.update(arm, ctx, outcome.reward)
-        # Same perturbed room, robot on its own: this attempt is what readiness measures.
+        # Headline readiness = the real attempt (the robot with every option,
+        # including asking a human) — the number Mike was shown all day.
+        self.metrics.record(outcome, p.weight)
+        # Second, stricter number: the same room, robot on its own (no human
+        # assist). Scored into its own Metrics so it never replaces the headline.
         probe_arm = self.probe.select(ctx)
         probe = self.task.attempt(self.current, probe_arm)
         self.probe.update(probe_arm, ctx, probe.reward)
-        self.metrics.record(probe, p.weight)
+        self.metrics_autonomous.record(probe, p.weight)
         handle = self.provider.prepare(self.current)
         report = self.metrics.report()
 
@@ -164,6 +173,8 @@ class Session:
                 "placeholder_readiness": report.placeholder_readiness,
                 "placeholder_readiness_smoothed": report.placeholder_readiness_smoothed,
                 "warming_up": report.warming_up,
+                "placeholder_readiness_autonomous": self.metrics_autonomous.report().placeholder_readiness_smoothed,
+                "state_autonomous": self.metrics_autonomous.report().state,
                 "window_fill": report.window_fill,
                 "placeholder_success_ci": list(report.placeholder_success_ci),
                 "state": report.state,
