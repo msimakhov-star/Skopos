@@ -53,19 +53,34 @@ These limitations are the point, not a disclaimer.
 
 ## Privacy
 
-Frames are processed into a SceneGraph and then discarded. **Only structured text ever
-crosses a network boundary.** This is not a policy we promise to follow — it is the only
-code path that exists:
+**Pixels never reach the agent, the bandit, or any metric.** `SceneGraph.context_vector()`
+is the only thing the policy ever sees: `server.py` calls it, hands the result to
+`bandit.select` / `bandit.update`, and the outcome model takes `(SceneGraph, strategy)`.
+There is no code path from a frame to a decision. This is not a policy we promise to
+follow — it is the only code path that exists.
 
-- `PerceptionResult.frames_retained` is returned by every perception implementation and
-  displayed in the UI. The only way it becomes non-zero is `SKOPOS_DEBUG_KEEP_FRAMES=1`,
-  which defaults off and logs a warning when on.
-- The **"what leaves your device"** panel shows the exact JSON payload transmitted, next to
-  the discarded frame count. Read it on screen — there are no pixels in it.
-- A privacy assertion is logged once at startup.
+Image data *can* leave the device in two cases, and every byte that does is counted on
+screen, in the two counters in the **"what leaves your device"** panel:
 
-If you wire up a cloud VLM or Runware, frames or photos do leave the device — redact
-locally first. `providers/runware.py` carries that warning inline.
+- **pixels → agent / bandit / metrics** — structurally zero. Nothing to count.
+- **pixels → renderer** — the anchor image the Reactor provider requires the browser to
+  upload before `start`. Bytes shown as they are sent. Zero on `mock`.
+
+The two cases:
+
+1. `perception/vlm.py`, active only when `ANTHROPIC_API_KEY` is set, POSTs base64 JPEG
+   frames (at most six) to the Anthropic API and returns a SceneGraph. The frames are
+   dropped when the call returns; `frames processed` / `frames retained` count them.
+   Unset the key and the mock perception runs entirely offline.
+2. The Reactor provider needs an anchor photo of the room, uploaded from the browser to
+   Reactor. Counted by `pixels → renderer`. Redact locally first.
+
+`PerceptionResult.frames_retained` is returned by every perception implementation and
+displayed next to the counters. The only way it becomes non-zero is
+`SKOPOS_DEBUG_KEEP_FRAMES=1`, which defaults off and logs a warning when on. The panel also
+prints the exact JSON payload the policy consumes — read it on screen, there are no pixels
+in it. A privacy assertion is logged once at startup. `providers/runware.py` carries a
+second-vendor warning inline.
 
 ## The importance-weighting maths
 
@@ -111,13 +126,13 @@ Bands: **≥ 75 READY · 45–74 MARGINAL · < 45 NOT READY**
 | Provider | Status | Notes |
 |---|---|---|
 | `mock` | complete | Synthetic schematic + degradation curve. Zero API keys. Default. |
-| `reactor` | implemented | Real token exchange and session handoff. Needs `REACTOR_API_KEY`. |
+| `reactor` | implemented and verified live | Token exchange (max_sessions=50, 30-min session cap), browser WebRTC session in `static/reactor-client.js`, anchor upload, W/S/A/D + look, 90s idle kill. Needs `REACTOR_API_KEY`. |
 | `runware` | stub | `TODO(runware)` — new-anchor image generation only. Not in the demo path. |
 
 Reactor (`reactor.inc`) is the headline partner: real-time generative media, every major
-world model behind one API, sub-50ms streaming. Python mints a session JWT; the **browser**
-opens the WebRTC session itself, so the API key never reaches the client and the low-latency
-path is not proxied away. See `docs/PROVIDER_SWAP.md`.
+world model behind one API, sub-50ms streaming. Python mints a session JWT (done); the
+**browser** opens the WebRTC session itself (in progress), so the API key never reaches the
+client and the low-latency path is not proxied away. See `docs/PROVIDER_SWAP.md`.
 
 Two Reactor behaviours shape the design: an anchor image is required before `start` and
 **the image wins over the prompt**, so prompt steering can change lighting, atmosphere and

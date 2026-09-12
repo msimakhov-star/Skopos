@@ -112,10 +112,19 @@ def check_naming_honesty() -> None:
     print("  naming honesty     OK  placeholder_ prefixes present, no 'trained'/'learned policy'")
 
 
+def check_vlm_offline() -> None:
+    """The VLM adapter must construct without touching the network and carry a
+    non-empty model id. No request is made here."""
+    from .perception.vlm import MODEL, VLMPerception
+    VLMPerception(api_key="x")
+    assert isinstance(MODEL, str) and MODEL, "SKOPOS_VLM_MODEL resolved to empty"
+    print(f"  vlm offline        OK  constructs without network, model {MODEL!r}")
+
+
 def main() -> int:
     print("skopos selfcheck")
     for fn in (check_privacy, check_importance_weights, check_bandit_flip,
-               check_end_to_end, check_naming_honesty):
+               check_end_to_end, check_naming_honesty, check_vlm_offline):
         fn()
     print("all checks passed")
     return 0

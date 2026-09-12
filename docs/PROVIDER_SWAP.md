@@ -13,7 +13,7 @@ cp .env.example .env
 # set SKOPOS_PROVIDER=reactor
 ```
 
-## 2. What is already done
+## 2. What is already done — the Python half
 
 `providers/reactor.py` is implemented, not stubbed. Verified against docs.reactor.inc on
 12 September 2026:
@@ -30,10 +30,11 @@ cp .env.example .env
 `ReactorProvider.prepare()` returns a `RenderHandle(kind="webrtc")` whose `detail` carries
 the JWT, model name, seed and idle-kill interval.
 
-## 3. What remains — the browser side (the 10 minutes)
+## 3. What remains — the browser side (in progress)
 
-`static/index.html` switches to the `<video>` element on `kind === "webrtc"` but does not yet
-open the session. Add, in that branch:
+`static/index.html` switches to the `<video>` element on `kind === "webrtc"`. Opening the
+session, the anchor upload, `start` and the key bindings are being written now and are not
+yet verified end to end. The branch needs:
 
 ```js
 const { LingbotWorld2Model } = await import(handle.detail.sdk);
@@ -71,4 +72,4 @@ SKOPOS_PROVIDER=reactor ./run.sh
 ```
 The header badge should read `provider reactor` and the `<video>` element should replace the
 schematic canvas. If the token exchange fails you get a clear `RuntimeError` at startup, not
-a silent fallback.
+a silent fallback. Video actually streaming depends on the section 3 browser work landing.

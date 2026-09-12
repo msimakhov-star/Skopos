@@ -12,6 +12,9 @@ import httpx
 from .base import PerceptionResult, debug_keep_frames
 from ..scene_graph import SceneGraph, SceneObject, Pose, ALL_HAZARDS
 
+# Exact Claude API id per platform.claude.com/docs/en/about-claude/models/overview
+# (fetched 2026-09-12): Sonnet-class "claude-sonnet-5", Haiku-class
+# "claude-haiku-4-5-20251001" (alias "claude-haiku-4-5"). Both accept image input.
 MODEL = os.environ.get("SKOPOS_VLM_MODEL", "claude-sonnet-5")
 
 SCHEMA_HINT = f"""Return ONLY JSON:
@@ -35,7 +38,8 @@ class VLMPerception:
         content: list[dict] = [{"type": "text", "text": SCHEMA_HINT}]
         for f in frames[:6]:
             content.append({"type": "image", "source": {
-                "type": "base64", "media_type": "image/jpeg",
+                "type": "base64",
+                "media_type": "image/png" if f[:4] == b"\x89PNG" else "image/jpeg",
                 "data": base64.b64encode(f).decode()}})
         r = httpx.post(
             os.environ.get("ANTHROPIC_BASE_URL", "https://api.anthropic.com") + "/v1/messages",
@@ -44,6 +48,10 @@ class VLMPerception:
                   "messages": [{"role": "user", "content": content}]},
             timeout=90,
         )
+        if r.status_code in (400, 404):
+            raise RuntimeError(
+                f"Anthropic API returned HTTP {r.status_code} for model {MODEL!r} "
+                f"(set SKOPOS_VLM_MODEL to override): {r.text[:300]}")
         r.raise_for_status()
         text = "".join(b.get("text", "") for b in r.json()["content"])
         raw = json.loads(text[text.index("{"): text.rindex("}") + 1])

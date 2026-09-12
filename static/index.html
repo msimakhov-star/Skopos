@@ -100,6 +100,7 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     <span style="color:var(--faint)">reward <b id="arew" style="color:var(--ink)">—</b></span>
     <span style="color:var(--faint)">cause <b id="acause" style="color:var(--ink)">—</b></span>
     <span style="color:var(--faint);margin-left:auto" id="note"></span>
+    <label style="font:11px var(--mono);color:var(--mute);cursor:pointer;border:1px solid var(--line);padding:5px 9px;background:var(--sunk)" title="scan a room photo into a scene graph (pixels are discarded server-side)">scan photo<input id="scan" type="file" accept="image/jpeg,image/png" style="display:none"></label>
     <select id="anchor" style="background:var(--sunk);color:var(--ink);border:1px solid var(--line);font:11px var(--mono);padding:4px" title="anchor photo for the Reactor world"></select>
     <button id="rx-end" style="flex:0 0 auto;padding:5px 9px" title="disconnect the Reactor session (stops billing)">End session</button>
   </div>
@@ -342,6 +343,18 @@ $("#rep").onclick = async () => {
   $("#anchor").innerHTML = FIX.map(n=>`<option value="/static/fixtures/${n}.jpg">${n}</option>`).join("");
   $("#anchor").onchange = e => window.SkoposReactor && window.SkoposReactor.setAnchor(e.target.value);
   $("#rx-end").onclick = () => window.SkoposReactor && window.SkoposReactor.disconnect();
+  $("#scan").onchange = async e => {
+    const file = e.target.files && e.target.files[0]; if (!file) return;
+    const fd = new FormData(); fd.append("file", file);
+    toast(`scanning ${file.name} …`);
+    const r = await fetch("/api/scan", { method: "POST", body: fd });
+    const j = await r.json().catch(() => ({}));
+    if (!r.ok) return toast(`scan failed: ${j.error || r.status}`);
+    toast(`scene graph: ${j.scene.objects.length} objects via ${j.source} · frames retained ${j.frames_retained}`);
+    // A running session keeps its old base room; reseed so this one picks up the scan.
+    if (ws && ws.readyState === 1) ws.send(JSON.stringify({ type: "reseed", seed: cfg.seed }));
+    e.target.value = "";
+  };
   cfg = await (await fetch("/api/config")).json();
   $("#task").textContent = cfg.task;
   buildAxes();

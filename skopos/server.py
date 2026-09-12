@@ -5,16 +5,16 @@ perception returns the number of frames it retained, and the UI shows it.
 """
 from __future__ import annotations
 
-import asyncio, json, logging, os, time
+import asyncio, email, json, logging, os, time
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from .scene_graph import SceneGraph
-from .perception import MockPerception
+from .perception import MockPerception, PerceptionResult
 from .perception.base import debug_keep_frames
 from .sampler import PerturbationSampler, AXES
 from .agent import LinUCB, FetchMugTask, STRATEGIES
@@ -30,6 +30,18 @@ RUNS = ROOT / "runs"
 RUNS.mkdir(exist_ok=True)
 
 app = FastAPI(title="Skopos")
+
+# Set by POST /api/scan. New Sessions start from it instead of the mock room;
+# the "reset_scene" WebSocket message clears it.
+LATEST_SCAN: SceneGraph | None = None
+MAX_SCAN_BYTES = 12 * 1024 * 1024
+
+
+def _perception():
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        from .perception.vlm import VLMPerception
+        return VLMPerception()
+    return MockPerception()
 
 
 def _provider(name: str):
@@ -68,6 +80,11 @@ class Session:
             self.provider_error = str(exc)
         self.perception = MockPerception()
         self.result = self.perception.analyse([], room_id="demo-room")
+        if LATEST_SCAN is not None:
+            # bytes_discarded is not recoverable from the graph; the UI shows frames only.
+            self.result = PerceptionResult(
+                LATEST_SCAN, LATEST_SCAN.frames_seen,
+                LATEST_SCAN.frames_seen if debug_keep_frames() else 0, 0)
         self.base: SceneGraph = self.result.graph
         self.sampler = PerturbationSampler(seed=seed)
         self.task = FetchMugTask(seed=seed)
@@ -148,6 +165,7 @@ async def config() -> JSONResponse:
 
 @app.websocket("/ws")
 async def ws(sock: WebSocket) -> None:
+    global LATEST_SCAN
     await sock.accept()
     session = Session(int(os.environ.get("SKOPOS_SEED", "1337")),
                       os.environ.get("SKOPOS_PROVIDER", "mock"))
@@ -182,6 +200,9 @@ async def ws(sock: WebSocket) -> None:
                 session.paused = bool(msg.get("value", True))
             elif kind == "reseed":
                 session.__init__(int(msg.get("seed", session.seed)), session.provider_name)
+            elif kind == "reset_scene":
+                LATEST_SCAN = None
+                session.__init__(session.seed, session.provider_name)
             elif kind == "record":
                 stamp = int(time.time())
                 path = RUNS / f"run-{stamp}-seed{session.seed}.json"
@@ -199,6 +220,70 @@ async def ws(sock: WebSocket) -> None:
     finally:
         task.cancel()
         session.provider.close()
+
+
+def _multipart_file(content_type: str, body: bytes) -> bytes | None:
+    """The 'file' part of a multipart/form-data body, parsed in memory.
+
+    Not Starlette's UploadFile: it spools anything over 1 MB to a temp file on
+    disk, and a raw frame must never touch disk (see perception/base.py).
+    """
+    msg = email.message_from_bytes(b"Content-Type: " + content_type.encode() + b"\r\n\r\n" + body)
+    for part in msg.walk():
+        if part.get_param("name", header="content-disposition") == "file":
+            return part.get_payload(decode=True)
+    return None
+
+
+@app.post("/api/scan")
+async def scan(request: Request) -> JSONResponse:
+    global LATEST_SCAN
+    chunks, size = [], 0
+    async for chunk in request.stream():
+        size += len(chunk)
+        if size > MAX_SCAN_BYTES:
+            return JSONResponse({"error": "upload larger than 12 MB"}, status_code=413)
+        chunks.append(chunk)
+    frame = _multipart_file(request.headers.get("content-type", ""), b"".join(chunks))
+    del chunks
+    if frame is None:
+        return JSONResponse({"error": "multipart field 'file' missing"}, status_code=400)
+    if not (frame[:3] == b"\xff\xd8\xff" or frame[:8] == b"\x89PNG\r\n\x1a\n"):
+        del frame
+        return JSONResponse({"error": "only image/jpeg or image/png accepted"}, status_code=415)
+
+    stamp = int(time.time())
+    perception = _perception()
+    # VLM does a blocking HTTP call; keep it off the event loop that pumps /ws.
+    result = await asyncio.to_thread(perception.analyse, [frame], room_id=f"scan-{stamp}")
+    del frame  # the only copy; nothing was written to disk
+
+    graph = result.graph
+    name = f"scan-{stamp}.json"
+    (RUNS / name).write_text(json.dumps({
+        "source": perception.name, "room_id": graph.room_id, "graph": graph.to_dict(),
+        "frames_processed": result.frames_processed,
+        "frames_retained": result.frames_retained,
+    }, indent=2))
+    LATEST_SCAN = graph
+    log.info("scan: %d bytes -> %d objects via %s; frames_retained=%d; cached %s",
+             result.bytes_discarded, len(graph.objects), perception.name,
+             result.frames_retained, name)
+    return JSONResponse({
+        "scene": graph.to_dict(),
+        "frames_seen": result.frames_processed,
+        "frames_retained": result.frames_retained,
+        "source": perception.name,
+        "cached_as": name,
+    })
+
+
+@app.get("/api/scan/latest")
+async def scan_latest() -> JSONResponse:
+    newest = max(RUNS.glob("scan-*.json"), key=lambda p: p.stat().st_mtime, default=None)
+    if newest is None:
+        return JSONResponse({"error": "no scan yet"}, status_code=404)
+    return JSONResponse(json.loads(newest.read_text()))
 
 
 @app.get("/api/runs")
