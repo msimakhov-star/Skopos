@@ -58,7 +58,14 @@ class Session:
     def __init__(self, seed: int, provider_name: str):
         self.seed = seed
         self.provider_name = provider_name
-        self.provider = _provider(provider_name)
+        try:
+            self.provider = _provider(provider_name)
+        except RuntimeError as exc:
+            # e.g. SKOPOS_PROVIDER=reactor with no key. Degrade loudly, not silently.
+            log.error("provider %r unavailable (%s); falling back to mock", provider_name, exc)
+            self.provider_name = "mock"
+            self.provider = MockProvider()
+            self.provider_error = str(exc)
         self.perception = MockPerception()
         self.result = self.perception.analyse([], room_id="demo-room")
         self.base: SceneGraph = self.result.graph
@@ -69,6 +76,7 @@ class Session:
         self.current: SceneGraph = self.base
         self.paused = False
         self.history: list[dict] = []
+        self.provider_error: str | None = getattr(self, "provider_error", None)
 
     def set_axis_scale(self, axis: str, value: float) -> None:
         if axis in AXES:
@@ -143,6 +151,19 @@ async def ws(sock: WebSocket) -> None:
     await sock.accept()
     session = Session(int(os.environ.get("SKOPOS_SEED", "1337")),
                       os.environ.get("SKOPOS_PROVIDER", "mock"))
+
+    # Mint the Reactor session token ONCE, in a worker thread. prepare() runs
+    # inside step() on the event loop; if it had to mint there, one cold
+    # httpx.post(timeout=30) would freeze the pump, every inbound slider/pause/
+    # record message, and every HTTP route at the same time.
+    mint = getattr(session.provider, "mint_token", None)
+    if mint is not None:
+        try:
+            await asyncio.to_thread(mint)
+        except Exception as exc:  # surface it in the UI rather than a dead pane
+            log.error("reactor token mint failed: %s", exc)
+            await sock.send_json({"type": "error", "where": "reactor.mint_token",
+                                  "message": str(exc)[:300]})
 
     async def pump() -> None:
         while True:

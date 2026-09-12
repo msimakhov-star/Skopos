@@ -126,7 +126,10 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
     <div class="pmeta">
       <span>frames processed <b id="fp">0</b></span>
       <span>frames retained <b id="fr" class="zero">0</b></span>
-      <span>pixels transmitted <b class="zero">0</b></span>
+    </div>
+    <div class="pmeta">
+      <span>pixels → agent / bandit / metrics <b id="px-agent" class="zero">0</b></span>
+      <span>pixels → renderer <b id="px-render" class="zero">0 B</b></span>
     </div>
     <pre id="payload">—</pre>
   </div>
@@ -156,6 +159,10 @@ button:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
 const $ = s => document.querySelector(s);
 const AXES = ["object_moved","object_removed","lighting","occlusion","clutter_added","reflective_surface"];
 let ws, cfg = {}, replaying = false, replayTimer = null;
+// Bytes of image data handed to the generative renderer (Reactor anchor upload).
+// 0 in mock mode because nothing is uploaded. Only the Reactor client increments it.
+let rendererBytes = 0;
+const fmtBytes = n => n < 1024 ? n + " B" : n < 1048576 ? (n/1024).toFixed(1) + " KB" : (n/1048576).toFixed(2) + " MB";
 
 function toast(t){ const e=$("#toast"); e.textContent=t; e.style.opacity=1;
   setTimeout(()=>e.style.opacity=0, 2200); }
@@ -284,6 +291,10 @@ function apply(f){
   $("#fp").textContent = f.privacy.frames_processed;
   $("#fr").textContent = f.privacy.frames_retained;
   $("#fr").className = f.privacy.frames_retained===0 ? "zero" : "";
+  // Structural: the agent's only input is scene_graph.context_vector(). Always 0.
+  $("#px-agent").textContent = "0";
+  $("#px-render").textContent = fmtBytes(rendererBytes);
+  $("#px-render").className = rendererBytes===0 ? "zero" : "";
   // Exactly the bytes that cross the boundary — judges can read it.
   $("#payload").textContent = JSON.stringify(f.scene_graph, null, 1);
 }
@@ -294,6 +305,7 @@ function connect(){
   ws.onmessage = e => {
     const f = JSON.parse(e.data);
     if (f.type === "recorded"){ toast(`recorded ${f.path} · ${f.frames} frames`); return; }
+    if (f.type === "error"){ toast(`${f.where}: ${f.message}`); $("#note").textContent = f.where + " failed — see toast"; return; }
     if (!replaying) apply(f);
   };
   ws.onclose = () => setTimeout(connect, 1200);
