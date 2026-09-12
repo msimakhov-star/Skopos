@@ -387,9 +387,10 @@ $("#rep").onclick = async () => {
       let summary, map = false, reseed = false;
       if (files.length >= 2) {
         toast(`fusing ${files.length} photos …`);
-        const sw = await post("/api/scan/sweep", files);                 // geometry only
-        const byOverlap = (sw.placed_by || []).filter(x => x === "overlap").length;
+        // scene graph first: /api/scan also stores a single-frame map, and the fused sweep map must be the one left behind
         const sg = await post("/api/scan", [files[0]]);                  // scene graph from the first frame
+        const sw = await post("/api/scan/sweep", files);                 // geometry only; overwrites the map
+        const byOverlap = (sw.placed_by || []).filter(x => x === "overlap").length;
         summary = `fused ${sw.photos} photos · ${byOverlap}/${(sw.placed_by || []).length} joins from overlap · scene graph: ${sg.scene.objects.length} objects via ${sg.source}`;
         map = sw.n_points > 0; reseed = true;
       } else if (await aspect(files[0]) > 2.5) {

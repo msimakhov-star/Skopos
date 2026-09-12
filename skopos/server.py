@@ -257,11 +257,23 @@ def _decode_rgb(frame: bytes):
     return np.asarray(Image.open(io.BytesIO(frame)).convert("RGB"))
 
 
+PANO_VFOV_DEG = 69.0   # the phone camera's long-side FOV; a pano strip's height spans roughly this
+
+
 def _clamp_fov(fov: float) -> float:
-    return max(90.0, min(360.0, float(fov)))
+    # Measured on IMG_6987: 120 deg -> 0 classified cells, 180 -> 4%, 290 -> 46%.
+    # Below ~150 the floor band the depth scale is fitted on collapses, so that is the floor.
+    return max(150.0, min(360.0, float(fov)))
 
 
-async def _pano_map(img, fov: float) -> dict:
+def _derive_fov(img) -> float:
+    """iPhone panoramas carry no FOV. Aspect x the camera's vertical FOV is the
+    principled guess: a 4.2:1 strip -> ~290 deg."""
+    h, w = img.shape[:2]
+    return _clamp_fov((w / max(h, 1)) * PANO_VFOV_DEG)
+
+
+async def _pano_map(img, fov: float, source: str = "given") -> dict:
     """Panorama pixels -> LATEST_MAP + runs/ cache, in a worker thread. Returns
     the response body. The caller deletes the pixels."""
     global LATEST_MAP
@@ -273,12 +285,12 @@ async def _pano_map(img, fov: float) -> dict:
     log.info("pano: %dx%d, assumed fov %.0f -> %d points, depth %.0f ms",
              img.shape[1], img.shape[0], fov, smap.n_points, smap.depth_ms)
     return {"n_points": smap.n_points, "depth_ms": round(smap.depth_ms, 1),
-            "pano_fov_deg": smap.pano_fov_deg, "frames_retained": 0,
+            "pano_fov_deg": smap.pano_fov_deg, "pano_fov_source": source, "frames_retained": 0,
             "cached_as": f"map-{stamp}.json", "note": smap.note}
 
 
 @app.post("/api/scan/pano")
-async def scan_pano(request: Request, fov: float = 180.0) -> JSONResponse:
+async def scan_pano(request: Request, fov: float | None = None) -> JSONResponse:
     """One wide panorama (iPhone Pano) -> one centred map. ?fov= is the assumed
     horizontal sweep in degrees — the phone does not record it — clamped 90..360.
     Same privacy contract as /api/scan: parsed in memory, deleted, numbers only."""
@@ -298,14 +310,14 @@ async def scan_pano(request: Request, fov: float = 180.0) -> JSONResponse:
     img = _decode_rgb(frame)
     del frame
     try:
-        body = await _pano_map(img, _clamp_fov(fov))
+        body = await _pano_map(img, _derive_fov(img) if fov is None else _clamp_fov(fov), "derived from aspect" if fov is None else "given")
     finally:
         del img
     return JSONResponse(body)
 
 
 @app.post("/api/scan/sweep")
-async def scan_sweep(request: Request, fov: float = 180.0) -> JSONResponse:
+async def scan_sweep(request: Request, fov: float | None = None) -> JSONResponse:
     """Several photos of ONE spot, turning -> one fused 360-ish map.
 
     Same privacy contract as /api/scan: frames are parsed in memory, fused in a
@@ -330,7 +342,7 @@ async def scan_sweep(request: Request, fov: float = 180.0) -> JSONResponse:
     del frames
     if len(imgs) == 1 and imgs[0].shape[1] / imgs[0].shape[0] > PANO_ASPECT:
         try:
-            body = await _pano_map(imgs[0], _clamp_fov(fov))
+            body = await _pano_map(imgs[0], _derive_fov(imgs[0]) if fov is None else _clamp_fov(fov), "derived from aspect" if fov is None else "given")
         finally:
             del imgs
         body["routed_to"] = "pano"

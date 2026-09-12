@@ -143,6 +143,50 @@ a measured one. A robot could plan a route on it; it should not trust the centim
 The 37 MB model weights are Apache-2.0, gitignored, and fetched from Hugging Face on the first
 scan (verified: 5 s on venue wifi).
 
+### Several photos, or a panorama
+
+- **Several photos from one spot** — pick them all in *scan photo*. They are fused as a rotating sweep:
+  the turn between consecutive photos is estimated from their overlap, and when the overlap is too
+  thin to trust, that photo is placed by even spacing (360°/N). The toast and the map's note say
+  which joins came from overlap and which were assumed. Camera at the centre of the map.
+- **A panorama** — a single wide image (aspect > 2.5) goes to the panorama path. It is treated as a
+  cylindrical projection: each column is a bearing, each row an elevation.
+
+**The panorama's field of view is the dominant unknown, and it is not in the file.** iPhone panoramas
+carry no FOV metadata. We derive it from the strip's aspect ratio times the camera's ~69° vertical
+FOV (a 4.2:1 strip → ~290°), and you can override it with `?fov=`. It matters a lot — measured on
+`IMG_6987.jpg`:
+
+| assumed FOV | obstacle cells | free cells | classified |
+|---|---|---|---|
+| 120° | 0 | 0 | 0 of 3600 |
+| 180° | 102 | 46 | 4% |
+| 240° | 257 | 578 | 23% |
+| 290° (derived) | 473 | 1173 | 46% |
+| 360° | 1365 | 1178 | 71% |
+
+Too small an assumption collapses the floor band the scale is fitted on and the map goes blank.
+The map's note always states the FOV it used and whether it was derived or given.
+
+### Readiness that is stable *and* honest
+
+The score fell from 91 to 65 when a moving hazard (the cat) was perturbed near the robot's path.
+That drop is correct — a harder room must score lower — and there is a self-check that fails if a
+hazardous room ever scores within 10 points of a clean one. What was wrong was volatility: the
+estimate was cumulative since session start and the state word flipped on a bare threshold. Now:
+
+- a sliding window (last 120 attempts) so the score tracks the *current* room;
+- `placeholder_readiness_smoothed` (exponential, α≈0.15) shown beside the raw value, never instead of it;
+- hysteresis on READY / MARGINAL / NOT READY (enter READY ≥75, leave <70; enter NOT READY <45, leave >50);
+- `placeholder_success_ci`, a 95% interval on the weighted success rate from the effective sample size.
+
+### The world lock (Reactor)
+
+The sampler perturbs the room every 0.55 s, so forwarding every prompt change re-steered the live
+world several times a second and it drifted into mush. Scene changes are now held (and counted on
+screen) until you click **apply scene**; unlocked, they are sent at most once per 4 s. This does not
+make the world model drift less — it means you choose when to steer it.
+
 ## Providers
 
 | Provider | Status | Notes |
